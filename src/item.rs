@@ -1,0 +1,183 @@
+use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct Attachment {
+    pub filename: String,
+    #[serde(rename = "type")]
+    pub kind: AttachmentType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentType {
+    Manual,
+    Receipt,
+    Photo,
+    Warranty,
+    Other,
+}
+
+/// A fully-loaded item, including any passthrough custom fields.
+///
+/// Well-known fields are typed; anything else is preserved in `extra` and
+/// round-trips transparently through JSON without modification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Item {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+
+    // Well-known optional fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brand: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purchase_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purchase_price: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warranty_expires: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retailer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<Attachment>>,
+
+    /// Passthrough: any fields not listed above are preserved here and
+    /// serialised back into the top-level JSON object (not nested).
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// Fields accepted when creating a new item (system fields are generated).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NewItem {
+    pub name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brand: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purchase_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purchase_price: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warranty_expires: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retailer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<Attachment>>,
+
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// Partial updates — every field is optional.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ItemUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brand: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purchase_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purchase_price: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warranty_expires: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retailer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<Attachment>>,
+
+    /// Passthrough fields to merge in (or overwrite). Not a replace — existing
+    /// extra fields not mentioned here are kept.
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_preserves_custom_fields() {
+        let json = r#"{
+            "id": "00000003",
+            "name": "Custom Fields Item",
+            "created_at": "2026-01-01T00:00:00.000Z",
+            "updated_at": "2026-01-01T00:00:00.000Z",
+            "serial_number": "ABC123XYZ",
+            "rack_unit": 2,
+            "custom_bool": true
+        }"#;
+
+        let item: Item = serde_json::from_str(json).unwrap();
+        assert_eq!(item.extra["serial_number"], Value::String("ABC123XYZ".into()));
+        assert_eq!(item.extra["rack_unit"], Value::Number(2.into()));
+        assert_eq!(item.extra["custom_bool"], Value::Bool(true));
+
+        // Serialise and re-parse — fields must survive the round-trip
+        let serialised = serde_json::to_string(&item).unwrap();
+        let reparsed: Item = serde_json::from_str(&serialised).unwrap();
+        assert_eq!(reparsed.extra["serial_number"], Value::String("ABC123XYZ".into()));
+    }
+
+    #[test]
+    fn purchase_price_is_number_not_string() {
+        let json = r#"{
+            "id": "00000002",
+            "name": "Full Item",
+            "created_at": "2026-01-01T00:00:00.000Z",
+            "updated_at": "2026-01-02T12:00:00.000Z",
+            "purchase_price": 649
+        }"#;
+        let item: Item = serde_json::from_str(json).unwrap();
+        assert_eq!(item.purchase_price, Some(649.0));
+    }
+}
