@@ -68,7 +68,7 @@ jobs:
           path: artifacts
 
       - name: Create platform packages
-        run: bunx napi artifacts --build-output-dir artifacts --dist npm
+        run: bunx napi artifacts --dir artifacts --dist npm
 
       - uses: actions/setup-node@v4
         with:
