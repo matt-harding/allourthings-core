@@ -59,38 +59,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-
-      - run: bun install
-
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          merge-multiple: true
 
-      - name: List downloaded artifacts
-        run: find artifacts -type f | sort
-
-      - name: Create platform packages
-        run: bunx napi artifacts --dir artifacts --dist npm
-
-      - name: List npm packages created
-        if: always()
-        run: find npm -type f | sort 2>/dev/null || echo "npm/ directory not created"
+      - name: List binaries
+        run: ls -la *.node
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Publish platform packages
-        run: |
-          for dir in npm/*/; do
-            npm publish "$dir" --access public
-          done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish main package
+      - name: Publish
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

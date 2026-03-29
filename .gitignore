@@ -4,8 +4,6 @@ Cargo.lock
 
 # Native addon build outputs (platform-specific, rebuilt locally)
 *.node
-index.js
-index.d.ts
 
 # Node
 node_modules/

@@ -9,6 +9,11 @@
     "type": "git",
     "url": "https://github.com/matt-harding/allourthings-core.git"
   },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
   "napi": {
     "name": "allourthings-core",
     "triples": {
