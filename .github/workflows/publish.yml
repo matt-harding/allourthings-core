@@ -67,8 +67,15 @@ jobs:
         with:
           path: artifacts
 
+      - name: List downloaded artifacts
+        run: find artifacts -type f | sort
+
       - name: Create platform packages
         run: bunx napi artifacts --dir artifacts --dist npm
+
+      - name: List npm packages created
+        if: always()
+        run: find npm -type f | sort 2>/dev/null || echo "npm/ directory not created"
 
       - uses: actions/setup-node@v4
         with:
