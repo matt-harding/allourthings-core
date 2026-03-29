@@ -137,6 +137,9 @@ fn update_does_not_change_created_at() {
         .add_item(NewItem { name: "My Item".into(), ..Default::default() })
         .unwrap();
 
+    // Sleep >1ms so the update timestamp is guaranteed to differ from created_at
+    std::thread::sleep(std::time::Duration::from_millis(2));
+
     let updated = store
         .update_item(&original.id, ItemUpdate { notes: Some("updated".into()), ..Default::default() })
         .unwrap()
