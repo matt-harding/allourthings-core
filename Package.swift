@@ -12,8 +12,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "allourthings_core",
-            // CI replaces this path with a remote url + checksum on each release.
-            path: "build/allourthings_core.xcframework"
+            url: "https://github.com/matt-harding/allourthings-core/releases/download/v0.1.8/allourthings_core.xcframework.zip",
+            checksum: "5a2e96e30a043af7b1ff9cd6303b944873f080a2575251382261b0a98090113d"
         ),
         .target(
             name: "AllourthingsCore",
