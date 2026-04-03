@@ -10,3 +10,9 @@ pub use error::Error;
 
 #[cfg(feature = "napi")]
 mod napi_bindings;
+
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();
+
+#[cfg(feature = "uniffi")]
+mod uniffi_bindings;

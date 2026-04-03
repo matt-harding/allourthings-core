@@ -1,0 +1,97 @@
+name: Release iOS XCFramework
+
+# Runs alongside publish.yml on every version tag.
+# Builds the XCFramework, zips it, updates Package.swift with the remote
+# URL and checksum, force-moves the tag to the updated commit, then
+# creates a GitHub release with the zip attached.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    name: Build XCFramework & publish SPM release
+    runs-on: macos-latest
+    permissions:
+      contents: write   # needed to push and create releases
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so we can push back to the tag
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build XCFramework
+        run: bash scripts/build-ios.sh
+
+      - name: Zip XCFramework
+        run: |
+          cd build
+          zip -r allourthings_core.xcframework.zip allourthings_core.xcframework
+
+      - name: Compute checksum
+        id: checksum
+        run: |
+          CHECKSUM=$(swift package compute-checksum build/allourthings_core.xcframework.zip)
+          echo "value=$CHECKSUM" >> "$GITHUB_OUTPUT"
+
+      - name: Patch Package.swift for remote binary target
+        env:
+          TAG: ${{ github.ref_name }}
+          CHECKSUM: ${{ steps.checksum.outputs.value }}
+        run: |
+          REPO="https://github.com/matt-harding/allourthings-core"
+          URL="${REPO}/releases/download/${TAG}/allourthings_core.xcframework.zip"
+
+          python3 - "$URL" "$CHECKSUM" <<'PYEOF'
+          import sys, re, pathlib
+
+          url, checksum = sys.argv[1], sys.argv[2]
+          path = pathlib.Path("Package.swift")
+          text = path.read_text()
+
+          old = re.search(r'\.binaryTarget\([^)]*path:[^)]+\)', text, re.DOTALL)
+          if not old:
+              raise SystemExit("Could not find local binaryTarget block in Package.swift")
+
+          new = (
+              f'.binaryTarget(\n'
+              f'            name: "allourthings_core",\n'
+              f'            url: "{url}",\n'
+              f'            checksum: "{checksum}"\n'
+              f'        )'
+          )
+
+          text = text[:old.start()] + new + text[old.end():]
+          path.write_text(text)
+          print("Package.swift updated.")
+          PYEOF
+
+      - name: Commit updated files and move tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Package.swift Sources/AllourthingsCore/allourthings_core.swift
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: update SPM manifest for ${TAG} [skip ci]"
+          git tag -f "$TAG"
+          git push origin HEAD:main
+          git push --force origin "$TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: build/allourthings_core.xcframework.zip

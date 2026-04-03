@@ -115,7 +115,7 @@ impl CatalogStore {
     // -------------------------------------------------------------------------
 
     pub fn add_item(&self, new_item: NewItem) -> Result<Item, Error> {
-        let id = generate_id();
+        let id = new_item.id.clone().unwrap_or_else(generate_id);
         let now = Self::now_iso8601();
         let item = Item {
             id: id.clone(),
