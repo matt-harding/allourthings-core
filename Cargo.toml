@@ -9,18 +9,29 @@ keywords = ["inventory", "storage", "mcp", "household"]
 categories = ["filesystem"]
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
-napi = ["dep:napi", "dep:napi-derive"]
+napi   = ["dep:napi", "dep:napi-derive"]
+uniffi = ["dep:uniffi", "dep:uniffi_bindgen", "uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["uniffi"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8"
 thiserror = "1"
-napi = { version = "2", features = ["napi4", "serde-json"], optional = true }
+napi       = { version = "2", features = ["napi4", "serde-json"], optional = true }
 napi-derive = { version = "2", optional = true }
+uniffi         = { version = "0.28", optional = true }
+uniffi_bindgen = { version = "0.28", optional = true }
+
+# The cli feature enables uniffi::cli::uniffi_bindgen_main()
+# used by the uniffi-bindgen binary target below.
 
 [dev-dependencies]
 tempfile = "3"
