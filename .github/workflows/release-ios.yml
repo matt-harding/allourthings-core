@@ -59,9 +59,9 @@ jobs:
           path = pathlib.Path("Package.swift")
           text = path.read_text()
 
-          old = re.search(r'\.binaryTarget\([^)]*path:[^)]+\)', text, re.DOTALL)
+          old = re.search(r'\.binaryTarget\([^)]+\)', text, re.DOTALL)
           if not old:
-              raise SystemExit("Could not find local binaryTarget block in Package.swift")
+              raise SystemExit("Could not find binaryTarget block in Package.swift")
 
           new = (
               f'.binaryTarget(\n'
