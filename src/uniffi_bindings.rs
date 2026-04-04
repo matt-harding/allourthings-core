@@ -313,4 +313,33 @@ impl UniCatalogStore {
             .map(|v| v.into_iter().map(UniItem::from).collect())
             .map_err(Into::into)
     }
+
+    pub fn add_attachment(
+        &self,
+        item_id: String,
+        filename: String,
+        kind: AttachmentKind,
+        data: Vec<u8>,
+        label: Option<String>,
+    ) -> Result<UniItem, CatalogError> {
+        self.inner
+            .add_attachment(&item_id, &filename, kind.into(), &data, label)
+            .map(UniItem::from)
+            .map_err(Into::into)
+    }
+
+    pub fn get_attachment(&self, item_id: String, filename: String) -> Result<Vec<u8>, CatalogError> {
+        self.inner.get_attachment(&item_id, &filename).map_err(Into::into)
+    }
+
+    pub fn delete_attachment(
+        &self,
+        item_id: String,
+        filename: String,
+    ) -> Result<Option<UniItem>, CatalogError> {
+        self.inner
+            .delete_attachment(&item_id, &filename)
+            .map(|opt| opt.map(UniItem::from))
+            .map_err(Into::into)
+    }
 }

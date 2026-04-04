@@ -240,6 +240,78 @@ impl CatalogStore {
             .filter(|i| serde_json::to_string(i).unwrap_or_default().to_lowercase().contains(&lower))
             .collect())
     }
+
+    // -------------------------------------------------------------------------
+    // Attachment file I/O
+    // -------------------------------------------------------------------------
+
+    /// Write `data` as `filename` inside the item's directory, and record it in
+    /// `item.json`. If an attachment with the same filename already exists its
+    /// record is replaced (useful for re-uploading an updated photo).
+    pub fn add_attachment(
+        &self,
+        item_id: &str,
+        filename: &str,
+        kind: crate::item::AttachmentType,
+        data: &[u8],
+        label: Option<String>,
+    ) -> Result<Item, Error> {
+        let dir = self.find_dir_by_id(item_id)?
+            .ok_or_else(|| Error::NotFound(item_id.to_string()))?;
+        let mut item = Self::read_item_from_dir(&dir)?
+            .ok_or_else(|| Error::NotFound(item_id.to_string()))?;
+
+        fs::write(dir.join(filename), data)?;
+
+        let new_attachment = crate::item::Attachment { filename: filename.to_string(), kind, label };
+        let mut attachments = item.attachments.unwrap_or_default();
+        if let Some(pos) = attachments.iter().position(|a| a.filename == filename) {
+            attachments[pos] = new_attachment;
+        } else {
+            attachments.push(new_attachment);
+        }
+        item.attachments = Some(attachments);
+        item.updated_at = Self::now_iso8601();
+
+        Self::write_item_to_dir(&dir, &item)?;
+        Ok(item)
+    }
+
+    /// Read raw bytes for a named attachment file.
+    pub fn get_attachment(&self, item_id: &str, filename: &str) -> Result<Vec<u8>, Error> {
+        let dir = self.find_dir_by_id(item_id)?
+            .ok_or_else(|| Error::NotFound(item_id.to_string()))?;
+        Ok(fs::read(dir.join(filename))?)
+    }
+
+    /// Delete an attachment file and remove its record from `item.json`.
+    /// Returns `None` if the item does not exist.
+    pub fn delete_attachment(&self, item_id: &str, filename: &str) -> Result<Option<Item>, Error> {
+        let dir = match self.find_dir_by_id(item_id)? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        let mut item = match Self::read_item_from_dir(&dir)? {
+            Some(i) => i,
+            None => return Ok(None),
+        };
+
+        let file_path = dir.join(filename);
+        if file_path.exists() {
+            fs::remove_file(&file_path)?;
+        }
+
+        if let Some(ref mut attachments) = item.attachments {
+            attachments.retain(|a| a.filename != filename);
+            if attachments.is_empty() {
+                item.attachments = None;
+            }
+        }
+        item.updated_at = Self::now_iso8601();
+
+        Self::write_item_to_dir(&dir, &item)?;
+        Ok(Some(item))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -279,4 +351,101 @@ fn epoch_to_ymd_hms(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
 
 fn is_leap(y: u32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    use crate::item::{AttachmentType, NewItem};
+
+    fn make_store() -> (CatalogStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CatalogStore::new(dir.path());
+        (store, dir)
+    }
+
+    fn add_test_item(store: &CatalogStore) -> Item {
+        store.add_item(NewItem {
+            name: "Test Item".to_string(),
+            ..Default::default()
+        }).unwrap()
+    }
+
+    #[test]
+    fn add_and_get_attachment() {
+        let (store, _dir) = make_store();
+        let item = add_test_item(&store);
+        let data = b"fake image bytes";
+
+        let updated = store.add_attachment(&item.id, "photo.jpg", AttachmentType::Photo, data, None).unwrap();
+        assert_eq!(updated.attachments.as_ref().unwrap().len(), 1);
+        assert_eq!(updated.attachments.as_ref().unwrap()[0].filename, "photo.jpg");
+
+        let retrieved = store.get_attachment(&item.id, "photo.jpg").unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[test]
+    fn add_attachment_with_label() {
+        let (store, _dir) = make_store();
+        let item = add_test_item(&store);
+
+        let updated = store.add_attachment(
+            &item.id, "receipt.jpg", AttachmentType::Receipt, b"data", Some("Amazon receipt".to_string()),
+        ).unwrap();
+        let att = &updated.attachments.as_ref().unwrap()[0];
+        assert_eq!(att.label, Some("Amazon receipt".to_string()));
+    }
+
+    #[test]
+    fn replace_existing_attachment() {
+        let (store, _dir) = make_store();
+        let item = add_test_item(&store);
+
+        store.add_attachment(&item.id, "photo.jpg", AttachmentType::Photo, b"v1", None).unwrap();
+        let updated = store.add_attachment(&item.id, "photo.jpg", AttachmentType::Photo, b"v2", Some("updated".to_string())).unwrap();
+
+        // Still only one attachment record
+        assert_eq!(updated.attachments.as_ref().unwrap().len(), 1);
+        // File bytes replaced
+        assert_eq!(store.get_attachment(&item.id, "photo.jpg").unwrap(), b"v2");
+    }
+
+    #[test]
+    fn delete_attachment_removes_file_and_record() {
+        let (store, _dir) = make_store();
+        let item = add_test_item(&store);
+
+        store.add_attachment(&item.id, "photo.jpg", AttachmentType::Photo, b"data", None).unwrap();
+        let updated = store.delete_attachment(&item.id, "photo.jpg").unwrap().unwrap();
+
+        assert!(updated.attachments.is_none());
+        assert!(store.get_attachment(&item.id, "photo.jpg").is_err());
+    }
+
+    #[test]
+    fn delete_attachment_on_missing_item_returns_none() {
+        let (store, _dir) = make_store();
+        let result = store.delete_attachment("nonexistent", "photo.jpg").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_attachment_on_missing_item_returns_error() {
+        let (store, _dir) = make_store();
+        assert!(store.get_attachment("nonexistent", "photo.jpg").is_err());
+    }
+
+    #[test]
+    fn multiple_attachments_coexist() {
+        let (store, _dir) = make_store();
+        let item = add_test_item(&store);
+
+        store.add_attachment(&item.id, "photo1.jpg", AttachmentType::Photo, b"img1", None).unwrap();
+        let updated = store.add_attachment(&item.id, "photo2.jpg", AttachmentType::Photo, b"img2", None).unwrap();
+
+        assert_eq!(updated.attachments.as_ref().unwrap().len(), 2);
+        assert_eq!(store.get_attachment(&item.id, "photo1.jpg").unwrap(), b"img1");
+        assert_eq!(store.get_attachment(&item.id, "photo2.jpg").unwrap(), b"img2");
+    }
 }
