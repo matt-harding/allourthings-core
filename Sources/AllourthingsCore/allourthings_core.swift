@@ -476,10 +476,34 @@ private struct FfiConverterString: FfiConverter {
     }
 }
 
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+private struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return try Data(readBytes(&buf, count: Int(len)))
+    }
+
+    static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
 public protocol UniCatalogStoreProtocol: AnyObject {
+    func addAttachment(itemId: String, filename: String, kind: AttachmentKind, data: Data, label: String?) throws -> UniItem
+
     func addItem(item: UniNewItem) throws -> UniItem
 
+    func deleteAttachment(itemId: String, filename: String) throws -> UniItem?
+
     func deleteItem(id: String) throws -> Bool
+
+    func getAttachment(itemId: String, filename: String) throws -> Data
 
     func getItem(idOrName: String) throws -> UniItem?
 
@@ -547,6 +571,17 @@ open class UniCatalogStore:
         try! rustCall { uniffi_allourthings_core_fn_free_unicatalogstore(pointer, $0) }
     }
 
+    open func addAttachment(itemId: String, filename: String, kind: AttachmentKind, data: Data, label: String?) throws -> UniItem {
+        return try FfiConverterTypeUniItem.lift(rustCallWithError(FfiConverterTypeCatalogError.lift) {
+            uniffi_allourthings_core_fn_method_unicatalogstore_add_attachment(self.uniffiClonePointer(),
+                                                                              FfiConverterString.lower(itemId),
+                                                                              FfiConverterString.lower(filename),
+                                                                              FfiConverterTypeAttachmentKind.lower(kind),
+                                                                              FfiConverterData.lower(data),
+                                                                              FfiConverterOptionString.lower(label), $0)
+        })
+    }
+
     open func addItem(item: UniNewItem) throws -> UniItem {
         return try FfiConverterTypeUniItem.lift(rustCallWithError(FfiConverterTypeCatalogError.lift) {
             uniffi_allourthings_core_fn_method_unicatalogstore_add_item(self.uniffiClonePointer(),
@@ -554,10 +589,26 @@ open class UniCatalogStore:
         })
     }
 
+    open func deleteAttachment(itemId: String, filename: String) throws -> UniItem? {
+        return try FfiConverterOptionTypeUniItem.lift(rustCallWithError(FfiConverterTypeCatalogError.lift) {
+            uniffi_allourthings_core_fn_method_unicatalogstore_delete_attachment(self.uniffiClonePointer(),
+                                                                                 FfiConverterString.lower(itemId),
+                                                                                 FfiConverterString.lower(filename), $0)
+        })
+    }
+
     open func deleteItem(id: String) throws -> Bool {
         return try FfiConverterBool.lift(rustCallWithError(FfiConverterTypeCatalogError.lift) {
             uniffi_allourthings_core_fn_method_unicatalogstore_delete_item(self.uniffiClonePointer(),
                                                                            FfiConverterString.lower(id), $0)
+        })
+    }
+
+    open func getAttachment(itemId: String, filename: String) throws -> Data {
+        return try FfiConverterData.lift(rustCallWithError(FfiConverterTypeCatalogError.lift) {
+            uniffi_allourthings_core_fn_method_unicatalogstore_get_attachment(self.uniffiClonePointer(),
+                                                                              FfiConverterString.lower(itemId),
+                                                                              FfiConverterString.lower(filename), $0)
         })
     }
 
@@ -1688,10 +1739,19 @@ private var initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if uniffi_allourthings_core_checksum_method_unicatalogstore_add_attachment() != 56390 {
+        return InitializationResult.apiChecksumMismatch
+    }
     if uniffi_allourthings_core_checksum_method_unicatalogstore_add_item() != 7227 {
         return InitializationResult.apiChecksumMismatch
     }
+    if uniffi_allourthings_core_checksum_method_unicatalogstore_delete_attachment() != 5953 {
+        return InitializationResult.apiChecksumMismatch
+    }
     if uniffi_allourthings_core_checksum_method_unicatalogstore_delete_item() != 50535 {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if uniffi_allourthings_core_checksum_method_unicatalogstore_get_attachment() != 51350 {
         return InitializationResult.apiChecksumMismatch
     }
     if uniffi_allourthings_core_checksum_method_unicatalogstore_get_item() != 33540 {
