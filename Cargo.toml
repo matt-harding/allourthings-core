@@ -1,6 +1,6 @@
 [package]
 name = "allourthings-core"
-version = "0.1.0"
+version = "0.1.10"
 edition = "2021"
 description = "Core storage library for All Our Things — shared across MCP server, iOS, and Android."
 license = "MIT"
