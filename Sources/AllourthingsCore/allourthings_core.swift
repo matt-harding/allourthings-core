@@ -1455,6 +1455,7 @@ public enum CatalogError {
     case NotFound(id: String)
     case Io(message: String)
     case Json(message: String)
+    case InvalidFilename(filename: String)
 }
 
 #if swift(>=5.8)
@@ -1475,6 +1476,9 @@ public struct FfiConverterTypeCatalogError: FfiConverterRustBuffer {
         case 3: return try .Json(
                 message: FfiConverterString.read(from: &buf)
             )
+        case 4: return try .InvalidFilename(
+                filename: FfiConverterString.read(from: &buf)
+            )
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -1492,6 +1496,10 @@ public struct FfiConverterTypeCatalogError: FfiConverterRustBuffer {
         case let .Json(message):
             writeInt(&buf, Int32(3))
             FfiConverterString.write(message, into: &buf)
+
+        case let .InvalidFilename(filename):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(filename, into: &buf)
         }
     }
 }

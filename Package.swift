@@ -12,8 +12,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "allourthings_core",
-            url: "https://github.com/matt-harding/allourthings-core/releases/download/v0.1.9/allourthings_core.xcframework.zip",
-            checksum: "ca3c7deb2e518fbea61ed7c330849e5f5945c40fe7807c6c3403bbf96f176ad1"
+            url: "https://github.com/matt-harding/allourthings-core/releases/download/v0.1.11/allourthings_core.xcframework.zip",
+            checksum: "272efc98c2d1e992c93441360ca74a05e21eb8c908323bb87eae887c29102cb6"
         ),
         .target(
             name: "AllourthingsCore",
