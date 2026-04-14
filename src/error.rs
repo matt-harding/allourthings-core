@@ -10,4 +10,7 @@ pub enum Error {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("invalid filename: {0}")]
+    InvalidFilename(String),
 }

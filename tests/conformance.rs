@@ -3,7 +3,7 @@
 /// These are the canonical assertions from MANIFEST.json. Any compliant
 /// implementation (MCP server, iOS app, Android app) must pass the equivalent
 /// of these checks.
-use allourthings_core::{CatalogStore, item::ItemUpdate};
+use allourthings_core::{CatalogStore, item::ItemUpdate, error::Error};
 use std::path::PathBuf;
 
 fn fixtures_dir() -> PathBuf {
@@ -213,5 +213,33 @@ fn custom_fields_survive_update_roundtrip() {
         updated.extra.get("serial_number").and_then(|v| v.as_str()),
         Some("XYZ-987"),
         "passthrough fields must survive update round-trips"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Attachment filename validation (path traversal prevention)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_traversal_filename_is_rejected() {
+    use allourthings_core::item::{AttachmentType, NewItem};
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let store = CatalogStore::new(tmp.path());
+    let item = store
+        .add_item(NewItem { name: "Attachment Test".into(), ..Default::default() })
+        .unwrap();
+
+    let result = store.add_attachment(
+        &item.id,
+        "../escape",
+        AttachmentType::Photo,
+        b"malicious",
+        None,
+    );
+    assert!(
+        matches!(result, Err(Error::InvalidFilename(_))),
+        "filenames with path traversal components must be rejected"
     );
 }

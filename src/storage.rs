@@ -1,6 +1,7 @@
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::path::{Component, Path, PathBuf};
+
+use chrono::Utc;
 
 use crate::error::Error;
 use crate::id::generate_id;
@@ -98,16 +99,7 @@ impl CatalogStore {
     }
 
     fn now_iso8601() -> String {
-        // Format current UTC time as ISO 8601 with milliseconds
-        let secs = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let s = secs / 1000;
-        let ms = secs % 1000;
-        // Manual UTC formatting — avoids a chrono/time dependency for now
-        let (y, mo, d, h, min, sec) = epoch_to_ymd_hms(s as u64);
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", y, mo, d, h, min, sec, ms)
+        Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
     }
 
     // -------------------------------------------------------------------------
@@ -245,6 +237,18 @@ impl CatalogStore {
     // Attachment file I/O
     // -------------------------------------------------------------------------
 
+    /// Reject filenames that contain path separators or special components
+    /// (e.g. `../escape`, `/etc/passwd`, `.`). Only a single `Normal` component
+    /// is accepted.
+    fn validate_filename(filename: &str) -> Result<(), Error> {
+        let path = Path::new(filename);
+        let mut components = path.components();
+        match (components.next(), components.next()) {
+            (Some(Component::Normal(_)), None) => Ok(()),
+            _ => Err(Error::InvalidFilename(filename.to_string())),
+        }
+    }
+
     /// Write `data` as `filename` inside the item's directory, and record it in
     /// `item.json`. If an attachment with the same filename already exists its
     /// record is replaced (useful for re-uploading an updated photo).
@@ -256,6 +260,7 @@ impl CatalogStore {
         data: &[u8],
         label: Option<String>,
     ) -> Result<Item, Error> {
+        Self::validate_filename(filename)?;
         let dir = self.find_dir_by_id(item_id)?
             .ok_or_else(|| Error::NotFound(item_id.to_string()))?;
         let mut item = Self::read_item_from_dir(&dir)?
@@ -279,6 +284,7 @@ impl CatalogStore {
 
     /// Read raw bytes for a named attachment file.
     pub fn get_attachment(&self, item_id: &str, filename: &str) -> Result<Vec<u8>, Error> {
+        Self::validate_filename(filename)?;
         let dir = self.find_dir_by_id(item_id)?
             .ok_or_else(|| Error::NotFound(item_id.to_string()))?;
         Ok(fs::read(dir.join(filename))?)
@@ -287,6 +293,7 @@ impl CatalogStore {
     /// Delete an attachment file and remove its record from `item.json`.
     /// Returns `None` if the item does not exist.
     pub fn delete_attachment(&self, item_id: &str, filename: &str) -> Result<Option<Item>, Error> {
+        Self::validate_filename(filename)?;
         let dir = match self.find_dir_by_id(item_id)? {
             Some(d) => d,
             None => return Ok(None),
@@ -312,45 +319,6 @@ impl CatalogStore {
         Self::write_item_to_dir(&dir, &item)?;
         Ok(Some(item))
     }
-}
-
-// ---------------------------------------------------------------------------
-// Minimal UTC epoch → (year, month, day, hour, min, sec) without dependencies
-// ---------------------------------------------------------------------------
-
-fn epoch_to_ymd_hms(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
-    let sec = (epoch_secs % 60) as u32;
-    let mins = epoch_secs / 60;
-    let min = (mins % 60) as u32;
-    let hours = mins / 60;
-    let hour = (hours % 24) as u32;
-    let days = (hours / 24) as u32;
-
-    // Gregorian calendar calculation
-    let mut y = 1970u32;
-    let mut d = days;
-    loop {
-        let days_in_year = if is_leap(y) { 366 } else { 365 };
-        if d < days_in_year {
-            break;
-        }
-        d -= days_in_year;
-        y += 1;
-    }
-    let months = [31u32, if is_leap(y) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut mo = 0u32;
-    for (i, &days_in_month) in months.iter().enumerate() {
-        if d < days_in_month {
-            mo = i as u32 + 1;
-            break;
-        }
-        d -= days_in_month;
-    }
-    (y, mo, d + 1, hour, min, sec)
-}
-
-fn is_leap(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 #[cfg(test)]
