@@ -20,6 +20,9 @@ pub enum CatalogError {
 
     #[error("json error: {message}")]
     Json { message: String },
+
+    #[error("invalid filename: {filename}")]
+    InvalidFilename { filename: String },
 }
 
 impl From<Error> for CatalogError {
@@ -28,6 +31,7 @@ impl From<Error> for CatalogError {
             Error::NotFound(id) => CatalogError::NotFound { id },
             Error::Io(e) => CatalogError::Io { message: e.to_string() },
             Error::Json(e) => CatalogError::Json { message: e.to_string() },
+            Error::InvalidFilename(filename) => CatalogError::InvalidFilename { filename },
         }
     }
 }
