@@ -36,6 +36,7 @@ fn full_item_fields() {
     assert_eq!(item.id, "00000002");
     assert_eq!(item.name, "Full Item");
     assert_eq!(item.category.as_deref(), Some("electronics"));
+    assert_eq!(item.subcategory.as_deref(), Some("large appliance"));
     // purchase_price must be a number, not a string
     assert_eq!(item.purchase_price, Some(649.0));
     // date-only fields must NOT be full datetimes
@@ -171,6 +172,32 @@ fn update_renames_directory_on_name_change() {
 }
 
 #[test]
+fn get_item_empty_string_returns_none() {
+    use allourthings_core::item::NewItem;
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let store = CatalogStore::new(tmp.path());
+    store.add_item(NewItem { name: "Kettle".into(), ..Default::default() }).unwrap();
+
+    // Empty string must not substring-match every item
+    assert!(store.get_item("").unwrap().is_none());
+}
+
+#[test]
+fn search_items_empty_string_returns_nothing() {
+    use allourthings_core::item::NewItem;
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let store = CatalogStore::new(tmp.path());
+    store.add_item(NewItem { name: "Kettle".into(), ..Default::default() }).unwrap();
+
+    // Empty query must not match every item
+    assert!(store.search_items("").unwrap().is_empty());
+}
+
+#[test]
 fn delete_removes_item() {
     use allourthings_core::item::NewItem;
     use tempfile::TempDir;
@@ -214,6 +241,99 @@ fn custom_fields_survive_update_roundtrip() {
         Some("XYZ-987"),
         "passthrough fields must survive update round-trips"
     );
+}
+
+// ---------------------------------------------------------------------------
+// list_items filtering
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_items_filter_by_category() {
+    use allourthings_core::item::{ListFilter, NewItem};
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let store = CatalogStore::new(tmp.path());
+    store.add_item(NewItem { name: "Laptop".into(), category: Some("Electronics".into()), ..Default::default() }).unwrap();
+    store.add_item(NewItem { name: "Hammer".into(), category: Some("Tools".into()), ..Default::default() }).unwrap();
+    store.add_item(NewItem { name: "Phone".into(), category: Some("Electronics".into()), ..Default::default() }).unwrap();
+
+    let results = store.list_items(Some(ListFilter { category: Some("Electronics".into()), ..Default::default() })).unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|i| i.category.as_deref() == Some("Electronics")));
+}
+
+#[test]
+fn list_items_filter_by_subcategory() {
+    use allourthings_core::item::{ListFilter, NewItem};
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let store = CatalogStore::new(tmp.path());
+    store.add_item(NewItem { name: "MacBook".into(), category: Some("Electronics".into()), subcategory: Some("Laptop".into()), ..Default::default() }).unwrap();
+    store.add_item(NewItem { name: "iPhone".into(), category: Some("Electronics".into()), subcategory: Some("Phone".into()), ..Default::default() }).unwrap();
+    store.add_item(NewItem { name: "Blender".into(), category: Some("Appliances".into()), subcategory: Some("Kitchen".into()), ..Default::default() }).unwrap();
+
+    let results = store.list_items(Some(ListFilter { subcategory: Some("Laptop".into()), ..Default::default() })).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "MacBook");
+}
+
+#[test]
+fn list_items_filter_by_category_and_subcategory() {
+    use allourthings_core::item::{ListFilter, NewItem};
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let store = CatalogStore::new(tmp.path());
+    store.add_item(NewItem { name: "Drill".into(), category: Some("Tools".into()), subcategory: Some("Power".into()), ..Default::default() }).unwrap();
+    store.add_item(NewItem { name: "Hammer".into(), category: Some("Tools".into()), subcategory: Some("Hand".into()), ..Default::default() }).unwrap();
+    store.add_item(NewItem { name: "Blender".into(), category: Some("Appliances".into()), subcategory: Some("Power".into()), ..Default::default() }).unwrap();
+
+    let results = store.list_items(Some(ListFilter { category: Some("Tools".into()), subcategory: Some("Power".into()), ..Default::default() })).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "Drill");
+}
+
+#[test]
+fn list_items_filter_by_tags_and_logic() {
+    use allourthings_core::item::{ListFilter, NewItem};
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let store = CatalogStore::new(tmp.path());
+    store.add_item(NewItem { name: "Item A".into(), tags: Some(vec!["red".into(), "fragile".into()]), ..Default::default() }).unwrap();
+    store.add_item(NewItem { name: "Item B".into(), tags: Some(vec!["red".into()]), ..Default::default() }).unwrap();
+    store.add_item(NewItem { name: "Item C".into(), tags: Some(vec!["fragile".into()]), ..Default::default() }).unwrap();
+
+    let results = store.list_items(Some(ListFilter { tags: Some(vec!["red".into(), "fragile".into()]), ..Default::default() })).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "Item A");
+}
+
+#[test]
+fn list_items_filter_via_cache() {
+    use allourthings_core::item::{ListFilter, NewItem};
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let cache_dir = tmp.path().join("cache");
+    let store = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
+
+    store.add_item(NewItem { name: "MacBook".into(), category: Some("Electronics".into()), subcategory: Some("Laptop".into()), tags: Some(vec!["portable".into()]), ..Default::default() }).unwrap();
+    store.add_item(NewItem { name: "Drill".into(), category: Some("Tools".into()), subcategory: Some("Power".into()), ..Default::default() }).unwrap();
+
+    let by_cat = store.list_items(Some(ListFilter { category: Some("Electronics".into()), ..Default::default() })).unwrap();
+    assert_eq!(by_cat.len(), 1);
+    assert_eq!(by_cat[0].name, "MacBook");
+
+    let by_sub = store.list_items(Some(ListFilter { subcategory: Some("Power".into()), ..Default::default() })).unwrap();
+    assert_eq!(by_sub.len(), 1);
+    assert_eq!(by_sub[0].name, "Drill");
+
+    let by_tag = store.list_items(Some(ListFilter { tags: Some(vec!["portable".into()]), ..Default::default() })).unwrap();
+    assert_eq!(by_tag.len(), 1);
+    assert_eq!(by_tag[0].name, "MacBook");
 }
 
 // ---------------------------------------------------------------------------

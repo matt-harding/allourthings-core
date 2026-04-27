@@ -2,6 +2,13 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Debug, Default)]
+pub struct ListFilter {
+    pub category: Option<String>,
+    pub subcategory: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Attachment {
@@ -36,6 +43,8 @@ pub struct Item {
     // Well-known optional fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subcategory: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brand: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,6 +87,8 @@ pub struct NewItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub subcategory: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub brand: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -113,6 +124,8 @@ pub struct ItemUpdate {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subcategory: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brand: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
