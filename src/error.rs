@@ -13,4 +13,7 @@ pub enum Error {
 
     #[error("invalid filename: {0}")]
     InvalidFilename(String),
+
+    #[error("cache error: {0}")]
+    Cache(#[from] rusqlite::Error),
 }

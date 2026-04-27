@@ -4,14 +4,14 @@ use napi_derive::napi;
 use serde_json::Value;
 
 use crate::item::{AttachmentType, ItemUpdate, NewItem};
-use crate::storage::{CatalogStore, ListFilter};
+use crate::storage::CatalogStore;
 
 /// Filter options for listItems, exposed as a plain JS object.
 #[napi(object)]
 #[derive(Default)]
 pub struct JsListFilter {
     pub category: Option<String>,
-    pub location: Option<String>,
+    pub subcategory: Option<String>,
     pub tags: Option<Vec<String>>,
 }
 
@@ -28,8 +28,26 @@ pub struct JsCatalogStore {
 #[napi]
 impl JsCatalogStore {
     #[napi(constructor)]
-    pub fn new(data_dir: String) -> Self {
-        Self { inner: CatalogStore::new(data_dir) }
+    pub fn new(data_dir: String, cache_dir: Option<String>) -> Self {
+        let inner = match cache_dir {
+            Some(cd) => CatalogStore::new_with_cache(data_dir.clone(), cd)
+                .unwrap_or_else(|e| {
+                    eprintln!("[allourthings] cache disabled: {e}");
+                    CatalogStore::new(data_dir)
+                }),
+            None => CatalogStore::new(data_dir),
+        };
+        Self { inner }
+    }
+
+    #[napi]
+    pub fn refresh(&self) -> NapiResult<()> {
+        self.inner.refresh().map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    #[napi]
+    pub fn rebuild_cache(&self) -> NapiResult<()> {
+        self.inner.rebuild_cache().map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
     #[napi]
@@ -57,9 +75,9 @@ impl JsCatalogStore {
 
     #[napi]
     pub fn list_items(&self, filter: Option<JsListFilter>) -> NapiResult<Value> {
-        let list_filter = filter.map(|f| ListFilter {
+        let list_filter = filter.map(|f| crate::item::ListFilter {
             category: f.category,
-            location: f.location,
+            subcategory: f.subcategory,
             tags: f.tags,
         });
         let items = self.inner.list_items(list_filter)
@@ -98,6 +116,11 @@ impl JsCatalogStore {
     }
 
     #[napi]
+    pub fn get_item_fields(&self) -> NapiResult<Vec<String>> {
+        self.inner.get_item_fields().map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    #[napi]
     pub fn add_attachment(
         &self,
         item_id: String,
@@ -107,11 +130,11 @@ impl JsCatalogStore {
         label: Option<String>,
     ) -> NapiResult<Value> {
         let attachment_type = match kind.as_str() {
-            "manual"  => AttachmentType::Manual,
-            "receipt" => AttachmentType::Receipt,
-            "photo"   => AttachmentType::Photo,
+            "manual"   => AttachmentType::Manual,
+            "receipt"  => AttachmentType::Receipt,
+            "photo"    => AttachmentType::Photo,
             "warranty" => AttachmentType::Warranty,
-            _         => AttachmentType::Other,
+            _          => AttachmentType::Other,
         };
         let item = self.inner
             .add_attachment(&item_id, &filename, attachment_type, &data, label)

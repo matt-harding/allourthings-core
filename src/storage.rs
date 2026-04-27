@@ -1,20 +1,14 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use chrono::Utc;
 
+use crate::cache::CacheDb;
 use crate::error::Error;
 use crate::id::generate_id;
-use crate::item::{Item, ItemUpdate, NewItem};
+use crate::item::{Item, ItemUpdate, ListFilter, NewItem};
 use crate::slug::to_slug;
-
-/// Filtering options for list_items.
-#[derive(Debug, Default)]
-pub struct ListFilter {
-    pub category: Option<String>,
-    pub location: Option<String>,
-    pub tags: Option<Vec<String>>,
-}
 
 /// The main entry point for reading and writing catalog data.
 ///
@@ -22,11 +16,22 @@ pub struct ListFilter {
 /// responsibility — this is intentionally simple and sync.
 pub struct CatalogStore {
     data_dir: PathBuf,
+    cache: Option<CacheDb>,
 }
 
 impl CatalogStore {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
-        Self { data_dir: data_dir.into() }
+        Self { data_dir: data_dir.into(), cache: None }
+    }
+
+    /// Opens the store with an SQLite query cache at `cache_dir/catalog.db`.
+    /// Creates the cache directory and schema if they don't exist.
+    pub fn new_with_cache(
+        data_dir: impl Into<PathBuf>,
+        cache_dir: impl Into<PathBuf>,
+    ) -> Result<Self, Error> {
+        let cache = CacheDb::open(&cache_dir.into())?;
+        Ok(Self { data_dir: data_dir.into(), cache: Some(cache) })
     }
 
     fn items_dir(&self) -> PathBuf {
@@ -103,6 +108,123 @@ impl CatalogStore {
     }
 
     // -------------------------------------------------------------------------
+    // Cache helpers
+    // -------------------------------------------------------------------------
+
+    /// Unix seconds mtime of a file, 0 on any error.
+    fn file_mtime(path: &Path) -> i64 {
+        path.metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+
+    /// Extract the 8-char hex item ID from a directory name of the form `{slug}-{id}`.
+    fn extract_id_from_dirname(name: &str) -> Option<&str> {
+        if name.len() < 9 {
+            return None;
+        }
+        let (_, tail) = name.split_at(name.len() - 9);
+        if tail.starts_with('-') && tail[1..].bytes().all(|b| b.is_ascii_hexdigit()) {
+            Some(&tail[1..])
+        } else {
+            None
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Cache sync
+    // -------------------------------------------------------------------------
+
+    /// Incrementally sync the cache from the filesystem using mtime comparisons.
+    /// O(n) directory scan + O(changed) file reads.
+    /// No-op when no cache is configured.
+    pub fn refresh(&self) -> Result<(), Error> {
+        let cache = match &self.cache {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        let items_dir = self.items_dir();
+        if !items_dir.exists() {
+            return Ok(());
+        }
+
+        // Collect id → (dir_path, mtime) for every item dir on disk
+        let mut fs_dirs: std::collections::HashMap<String, (PathBuf, i64)> = Default::default();
+        for entry in fs::read_dir(&items_dir)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let name_str = file_name.to_string_lossy();
+            if name_str.starts_with('.') || !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Some(id) = Self::extract_id_from_dirname(&name_str) {
+                let item_json = entry.path().join("item.json");
+                if item_json.exists() {
+                    let mtime = Self::file_mtime(&item_json);
+                    fs_dirs.insert(id.to_string(), (entry.path(), mtime));
+                }
+            }
+        }
+
+        let cached = cache.get_id_mtime_map()?;
+
+        // Upsert items that are new or have a changed mtime
+        for (id, (dir, mtime)) in &fs_dirs {
+            let stale = cached.get(id).map_or(true, |&cm| *mtime != cm);
+            if stale {
+                if let Some(item) = Self::read_item_from_dir(dir)? {
+                    cache.upsert(&item, *mtime)?;
+                }
+            }
+        }
+
+        // Remove cache rows whose directories no longer exist
+        for id in cached.keys() {
+            if !fs_dirs.contains_key(id) {
+                cache.delete(id)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Drop and rebuild the entire cache by re-reading every item.json.
+    /// Use on first install, after detected corruption, or as a user-facing repair action.
+    /// No-op when no cache is configured.
+    pub fn rebuild_cache(&self) -> Result<(), Error> {
+        let cache = match &self.cache {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        cache.delete_all()?;
+
+        let items_dir = self.items_dir();
+        if !items_dir.exists() {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(&items_dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') || !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Some(item) = Self::read_item_from_dir(&entry.path())? {
+                let mtime = Self::file_mtime(&entry.path().join("item.json"));
+                cache.upsert(&item, mtime)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
     // Public CRUD API
     // -------------------------------------------------------------------------
 
@@ -115,6 +237,7 @@ impl CatalogStore {
             created_at: now.clone(),
             updated_at: now,
             category: new_item.category,
+            subcategory: new_item.subcategory,
             brand: new_item.brand,
             model: new_item.model,
             purchase_date: new_item.purchase_date,
@@ -131,10 +254,17 @@ impl CatalogStore {
         };
         let dir = self.item_dir_path(&item.name, &id);
         Self::write_item_to_dir(&dir, &item)?;
+        if let Some(ref cache) = self.cache {
+            let mtime = Self::file_mtime(&dir.join("item.json"));
+            cache.upsert(&item, mtime)?;
+        }
         Ok(item)
     }
 
     pub fn get_item(&self, id_or_name: &str) -> Result<Option<Item>, Error> {
+        if id_or_name.is_empty() {
+            return Ok(None);
+        }
         // Try exact ID match first
         if let Some(dir) = self.find_dir_by_id(id_or_name)? {
             return Ok(Self::read_item_from_dir(&dir)?);
@@ -151,15 +281,16 @@ impl CatalogStore {
     }
 
     pub fn list_items(&self, filter: Option<ListFilter>) -> Result<Vec<Item>, Error> {
+        if let Some(ref cache) = self.cache {
+            return cache.list_filtered(filter.as_ref());
+        }
         let mut items = self.load_all()?;
         if let Some(f) = filter {
             if let Some(cat) = f.category {
                 items.retain(|i| i.category.as_deref() == Some(cat.as_str()));
             }
-            if let Some(loc) = f.location {
-                items.retain(|i| {
-                    i.location.as_deref().map(|l| l.eq_ignore_ascii_case(&loc)).unwrap_or(false)
-                });
+            if let Some(sub) = f.subcategory {
+                items.retain(|i| i.subcategory.as_deref() == Some(sub.as_str()));
             }
             if let Some(tags) = f.tags {
                 items.retain(|i| {
@@ -191,6 +322,7 @@ impl CatalogStore {
             created_at: existing.created_at.clone(),
             updated_at: Self::now_iso8601(),
             category: updates.category.or(existing.category),
+            subcategory: updates.subcategory.or(existing.subcategory),
             brand: updates.brand.or(existing.brand),
             model: updates.model.or(existing.model),
             purchase_date: updates.purchase_date.or(existing.purchase_date),
@@ -211,6 +343,10 @@ impl CatalogStore {
             fs::rename(&old_dir, &new_dir)?;
         }
         Self::write_item_to_dir(&new_dir, &updated)?;
+        if let Some(ref cache) = self.cache {
+            let mtime = Self::file_mtime(&new_dir.join("item.json"));
+            cache.upsert(&updated, mtime)?;
+        }
         Ok(Some(updated))
     }
 
@@ -218,13 +354,33 @@ impl CatalogStore {
         match self.find_dir_by_id(id)? {
             Some(dir) => {
                 fs::remove_dir_all(dir)?;
+                if let Some(ref cache) = self.cache {
+                    cache.delete(id)?;
+                }
                 Ok(true)
             }
             None => Ok(false),
         }
     }
 
+    pub fn get_item_fields(&self) -> Result<Vec<String>, Error> {
+        if let Some(ref cache) = self.cache {
+            return cache.get_fields();
+        }
+        // No cache: derive field names by serialising every item to JSON
+        let mut fields = std::collections::BTreeSet::new();
+        for item in self.load_all()? {
+            if let Ok(serde_json::Value::Object(map)) = serde_json::to_value(&item) {
+                fields.extend(map.into_iter().map(|(k, _)| k));
+            }
+        }
+        Ok(fields.into_iter().collect())
+    }
+
     pub fn search_items(&self, query: &str) -> Result<Vec<Item>, Error> {
+        if query.is_empty() {
+            return Ok(vec![]);
+        }
         let lower = query.to_lowercase();
         let items = self.load_all()?;
         Ok(items
@@ -279,6 +435,10 @@ impl CatalogStore {
         item.updated_at = Self::now_iso8601();
 
         Self::write_item_to_dir(&dir, &item)?;
+        if let Some(ref cache) = self.cache {
+            let mtime = Self::file_mtime(&dir.join("item.json"));
+            cache.upsert(&item, mtime)?;
+        }
         Ok(item)
     }
 
@@ -317,6 +477,10 @@ impl CatalogStore {
         item.updated_at = Self::now_iso8601();
 
         Self::write_item_to_dir(&dir, &item)?;
+        if let Some(ref cache) = self.cache {
+            let mtime = Self::file_mtime(&dir.join("item.json"));
+            cache.upsert(&item, mtime)?;
+        }
         Ok(Some(item))
     }
 }
@@ -415,5 +579,62 @@ mod attachment_tests {
         assert_eq!(updated.attachments.as_ref().unwrap().len(), 2);
         assert_eq!(store.get_attachment(&item.id, "photo1.jpg").unwrap(), b"img1");
         assert_eq!(store.get_attachment(&item.id, "photo2.jpg").unwrap(), b"img2");
+    }
+
+    #[test]
+    fn cache_write_through_on_add() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let store = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
+
+        let item = store.add_item(NewItem { name: "Laptop".to_string(), ..Default::default() }).unwrap();
+        let results = store.list_items(None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, item.id);
+    }
+
+    #[test]
+    fn cache_write_through_on_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let store = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
+
+        let item = store.add_item(NewItem { name: "Laptop".to_string(), ..Default::default() }).unwrap();
+        assert_eq!(store.list_items(None).unwrap().len(), 1);
+        store.delete_item(&item.id).unwrap();
+        assert_eq!(store.list_items(None).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn refresh_picks_up_externally_written_item() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+
+        // Write an item directly without a cache
+        let store_no_cache = CatalogStore::new(tmp.path());
+        let item = store_no_cache.add_item(NewItem { name: "Kettle".to_string(), ..Default::default() }).unwrap();
+
+        // Open with cache — initially empty
+        let store = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
+        assert_eq!(store.list_items(None).unwrap().len(), 0); // cache not yet populated
+
+        store.refresh().unwrap();
+        let results = store.list_items(None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, item.id);
+    }
+
+    #[test]
+    fn rebuild_cache_repopulates_from_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+
+        let store = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
+        store.add_item(NewItem { name: "Toaster".to_string(), ..Default::default() }).unwrap();
+
+        // Simulate corruption by deleting all cache rows
+        let store2 = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
+        store2.rebuild_cache().unwrap();
+        assert_eq!(store2.list_items(None).unwrap().len(), 1);
     }
 }

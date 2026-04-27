@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     error::Error,
-    item::{Attachment as CoreAttachment, AttachmentType, Item as CoreItem, ItemUpdate, NewItem},
-    storage::{CatalogStore, ListFilter},
+    item::{Attachment as CoreAttachment, AttachmentType, Item as CoreItem, ItemUpdate, ListFilter, NewItem},
+    storage::CatalogStore,
 };
 
 // ---------------------------------------------------------------------------
@@ -23,6 +23,9 @@ pub enum CatalogError {
 
     #[error("invalid filename: {filename}")]
     InvalidFilename { filename: String },
+
+    #[error("cache error: {message}")]
+    Cache { message: String },
 }
 
 impl From<Error> for CatalogError {
@@ -32,6 +35,7 @@ impl From<Error> for CatalogError {
             Error::Io(e) => CatalogError::Io { message: e.to_string() },
             Error::Json(e) => CatalogError::Json { message: e.to_string() },
             Error::InvalidFilename(filename) => CatalogError::InvalidFilename { filename },
+            Error::Cache(e) => CatalogError::Cache { message: e.to_string() },
         }
     }
 }
@@ -107,6 +111,7 @@ pub struct UniItem {
     pub created_at: String,
     pub updated_at: String,
     pub category: Option<String>,
+    pub subcategory: Option<String>,
     pub brand: Option<String>,
     pub model: Option<String>,
     pub purchase_date: Option<String>,
@@ -131,6 +136,7 @@ impl From<CoreItem> for UniItem {
             created_at: i.created_at,
             updated_at: i.updated_at,
             category: i.category,
+            subcategory: i.subcategory,
             brand: i.brand,
             model: i.model,
             purchase_date: i.purchase_date,
@@ -158,6 +164,7 @@ pub struct UniNewItem {
     pub id: Option<String>,
     pub name: String,
     pub category: Option<String>,
+    pub subcategory: Option<String>,
     pub brand: Option<String>,
     pub model: Option<String>,
     pub purchase_date: Option<String>,
@@ -184,6 +191,7 @@ impl TryFrom<UniNewItem> for NewItem {
             id: u.id,
             name: u.name,
             category: u.category,
+            subcategory: u.subcategory,
             brand: u.brand,
             model: u.model,
             purchase_date: u.purchase_date,
@@ -209,6 +217,7 @@ impl TryFrom<UniNewItem> for NewItem {
 pub struct UniItemUpdate {
     pub name: Option<String>,
     pub category: Option<String>,
+    pub subcategory: Option<String>,
     pub brand: Option<String>,
     pub model: Option<String>,
     pub purchase_date: Option<String>,
@@ -234,6 +243,7 @@ impl TryFrom<UniItemUpdate> for ItemUpdate {
         Ok(ItemUpdate {
             name: u.name,
             category: u.category,
+            subcategory: u.subcategory,
             brand: u.brand,
             model: u.model,
             purchase_date: u.purchase_date,
@@ -258,13 +268,13 @@ impl TryFrom<UniItemUpdate> for ItemUpdate {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct UniListFilter {
     pub category: Option<String>,
-    pub location: Option<String>,
+    pub subcategory: Option<String>,
     pub tags: Option<Vec<String>>,
 }
 
 impl From<UniListFilter> for ListFilter {
     fn from(f: UniListFilter) -> Self {
-        ListFilter { category: f.category, location: f.location, tags: f.tags }
+        ListFilter { category: f.category, subcategory: f.subcategory, tags: f.tags }
     }
 }
 
@@ -282,6 +292,20 @@ impl UniCatalogStore {
     #[uniffi::constructor]
     pub fn new(data_dir: String) -> Arc<Self> {
         Arc::new(Self { inner: CatalogStore::new(data_dir) })
+    }
+
+    #[uniffi::constructor]
+    pub fn new_with_cache(data_dir: String, cache_dir: String) -> Result<Arc<Self>, CatalogError> {
+        let inner = CatalogStore::new_with_cache(data_dir, cache_dir)?;
+        Ok(Arc::new(Self { inner }))
+    }
+
+    pub fn refresh(&self) -> Result<(), CatalogError> {
+        self.inner.refresh().map_err(Into::into)
+    }
+
+    pub fn rebuild_cache(&self) -> Result<(), CatalogError> {
+        self.inner.rebuild_cache().map_err(Into::into)
     }
 
     pub fn add_item(&self, item: UniNewItem) -> Result<UniItem, CatalogError> {
@@ -309,6 +333,10 @@ impl UniCatalogStore {
 
     pub fn delete_item(&self, id: String) -> Result<bool, CatalogError> {
         self.inner.delete_item(&id).map_err(Into::into)
+    }
+
+    pub fn get_item_fields(&self) -> Result<Vec<String>, CatalogError> {
+        self.inner.get_item_fields().map_err(Into::into)
     }
 
     pub fn search_items(&self, query: String) -> Result<Vec<UniItem>, CatalogError> {

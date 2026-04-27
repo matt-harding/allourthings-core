@@ -14,3 +14,6 @@ npm/
 
 # iOS XCFramework build output (produced by scripts/build-ios.sh)
 build/
+
+# Xcode workspace state (generated when opening package in Xcode)
+.swiftpm/
