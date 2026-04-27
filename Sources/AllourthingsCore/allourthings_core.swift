@@ -507,7 +507,13 @@ public protocol UniCatalogStoreProtocol: AnyObject {
 
     func getItem(idOrName: String) throws -> UniItem?
 
+    func getItemFields() throws -> [String]
+
     func listItems(filter: UniListFilter?) throws -> [UniItem]
+
+    func rebuildCache() throws
+
+    func refresh() throws
 
     func searchItems(query: String) throws -> [UniItem]
 
@@ -571,6 +577,15 @@ open class UniCatalogStore:
         try! rustCall { uniffi_allourthings_core_fn_free_unicatalogstore(pointer, $0) }
     }
 
+    public static func newWithCache(dataDir: String, cacheDir: String) throws -> UniCatalogStore {
+        return try FfiConverterTypeUniCatalogStore.lift(rustCallWithError(FfiConverterTypeCatalogError.lift) {
+            uniffi_allourthings_core_fn_constructor_unicatalogstore_new_with_cache(
+                FfiConverterString.lower(dataDir),
+                FfiConverterString.lower(cacheDir), $0
+            )
+        })
+    }
+
     open func addAttachment(itemId: String, filename: String, kind: AttachmentKind, data: Data, label: String?) throws -> UniItem {
         return try FfiConverterTypeUniItem.lift(rustCallWithError(FfiConverterTypeCatalogError.lift) {
             uniffi_allourthings_core_fn_method_unicatalogstore_add_attachment(self.uniffiClonePointer(),
@@ -619,11 +634,29 @@ open class UniCatalogStore:
         })
     }
 
+    open func getItemFields() throws -> [String] {
+        return try FfiConverterSequenceString.lift(rustCallWithError(FfiConverterTypeCatalogError.lift) {
+            uniffi_allourthings_core_fn_method_unicatalogstore_get_item_fields(self.uniffiClonePointer(), $0)
+        })
+    }
+
     open func listItems(filter: UniListFilter?) throws -> [UniItem] {
         return try FfiConverterSequenceTypeUniItem.lift(rustCallWithError(FfiConverterTypeCatalogError.lift) {
             uniffi_allourthings_core_fn_method_unicatalogstore_list_items(self.uniffiClonePointer(),
                                                                           FfiConverterOptionTypeUniListFilter.lower(filter), $0)
         })
+    }
+
+    open func rebuildCache() throws {
+        try rustCallWithError(FfiConverterTypeCatalogError.lift) {
+            uniffi_allourthings_core_fn_method_unicatalogstore_rebuild_cache(self.uniffiClonePointer(), $0)
+        }
+    }
+
+    open func refresh() throws {
+        try rustCallWithError(FfiConverterTypeCatalogError.lift) {
+            uniffi_allourthings_core_fn_method_unicatalogstore_refresh(self.uniffiClonePointer(), $0)
+        }
     }
 
     open func searchItems(query: String) throws -> [UniItem] {
@@ -764,6 +797,7 @@ public struct UniItem {
     public var createdAt: String
     public var updatedAt: String
     public var category: String?
+    public var subcategory: String?
     public var brand: String?
     public var model: String?
     public var purchaseDate: String?
@@ -783,7 +817,7 @@ public struct UniItem {
 
     /// Default memberwise initializers are never public by default, so we
     /// declare one manually.
-    public init(id: String, name: String, createdAt: String, updatedAt: String, category: String?, brand: String?, model: String?, purchaseDate: String?, purchasePrice: Double?, currency: String?, warrantyExpires: String?, retailer: String?, location: String?, features: [String]?, notes: String?, tags: [String]?, attachments: [UniAttachment]?,
+    public init(id: String, name: String, createdAt: String, updatedAt: String, category: String?, subcategory: String?, brand: String?, model: String?, purchaseDate: String?, purchasePrice: Double?, currency: String?, warrantyExpires: String?, retailer: String?, location: String?, features: [String]?, notes: String?, tags: [String]?, attachments: [UniAttachment]?,
                 /* 
                     * JSON-encoded passthrough custom fields (e.g. `{}`).
                     */ extraJson: String)
@@ -793,6 +827,7 @@ public struct UniItem {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.category = category
+        self.subcategory = subcategory
         self.brand = brand
         self.model = model
         self.purchaseDate = purchaseDate
@@ -824,6 +859,9 @@ extension UniItem: Equatable, Hashable {
             return false
         }
         if lhs.category != rhs.category {
+            return false
+        }
+        if lhs.subcategory != rhs.subcategory {
             return false
         }
         if lhs.brand != rhs.brand {
@@ -874,6 +912,7 @@ extension UniItem: Equatable, Hashable {
         hasher.combine(createdAt)
         hasher.combine(updatedAt)
         hasher.combine(category)
+        hasher.combine(subcategory)
         hasher.combine(brand)
         hasher.combine(model)
         hasher.combine(purchaseDate)
@@ -902,6 +941,7 @@ public struct FfiConverterTypeUniItem: FfiConverterRustBuffer {
                 createdAt: FfiConverterString.read(from: &buf),
                 updatedAt: FfiConverterString.read(from: &buf),
                 category: FfiConverterOptionString.read(from: &buf),
+                subcategory: FfiConverterOptionString.read(from: &buf),
                 brand: FfiConverterOptionString.read(from: &buf),
                 model: FfiConverterOptionString.read(from: &buf),
                 purchaseDate: FfiConverterOptionString.read(from: &buf),
@@ -924,6 +964,7 @@ public struct FfiConverterTypeUniItem: FfiConverterRustBuffer {
         FfiConverterString.write(value.createdAt, into: &buf)
         FfiConverterString.write(value.updatedAt, into: &buf)
         FfiConverterOptionString.write(value.category, into: &buf)
+        FfiConverterOptionString.write(value.subcategory, into: &buf)
         FfiConverterOptionString.write(value.brand, into: &buf)
         FfiConverterOptionString.write(value.model, into: &buf)
         FfiConverterOptionString.write(value.purchaseDate, into: &buf)
@@ -957,6 +998,7 @@ public func FfiConverterTypeUniItem_lower(_ value: UniItem) -> RustBuffer {
 public struct UniItemUpdate {
     public var name: String?
     public var category: String?
+    public var subcategory: String?
     public var brand: String?
     public var model: String?
     public var purchaseDate: String?
@@ -976,13 +1018,14 @@ public struct UniItemUpdate {
 
     /// Default memberwise initializers are never public by default, so we
     /// declare one manually.
-    public init(name: String?, category: String?, brand: String?, model: String?, purchaseDate: String?, purchasePrice: Double?, currency: String?, warrantyExpires: String?, retailer: String?, location: String?, features: [String]?, notes: String?, tags: [String]?, attachments: [UniAttachment]?,
+    public init(name: String?, category: String?, subcategory: String?, brand: String?, model: String?, purchaseDate: String?, purchasePrice: Double?, currency: String?, warrantyExpires: String?, retailer: String?, location: String?, features: [String]?, notes: String?, tags: [String]?, attachments: [UniAttachment]?,
                 /* 
                     * JSON-encoded extra fields to merge in (pass `"{}"` to change nothing).
                     */ extraJson: String)
     {
         self.name = name
         self.category = category
+        self.subcategory = subcategory
         self.brand = brand
         self.model = model
         self.purchaseDate = purchaseDate
@@ -1005,6 +1048,9 @@ extension UniItemUpdate: Equatable, Hashable {
             return false
         }
         if lhs.category != rhs.category {
+            return false
+        }
+        if lhs.subcategory != rhs.subcategory {
             return false
         }
         if lhs.brand != rhs.brand {
@@ -1052,6 +1098,7 @@ extension UniItemUpdate: Equatable, Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(name)
         hasher.combine(category)
+        hasher.combine(subcategory)
         hasher.combine(brand)
         hasher.combine(model)
         hasher.combine(purchaseDate)
@@ -1077,6 +1124,7 @@ public struct FfiConverterTypeUniItemUpdate: FfiConverterRustBuffer {
             try UniItemUpdate(
                 name: FfiConverterOptionString.read(from: &buf),
                 category: FfiConverterOptionString.read(from: &buf),
+                subcategory: FfiConverterOptionString.read(from: &buf),
                 brand: FfiConverterOptionString.read(from: &buf),
                 model: FfiConverterOptionString.read(from: &buf),
                 purchaseDate: FfiConverterOptionString.read(from: &buf),
@@ -1096,6 +1144,7 @@ public struct FfiConverterTypeUniItemUpdate: FfiConverterRustBuffer {
     public static func write(_ value: UniItemUpdate, into buf: inout [UInt8]) {
         FfiConverterOptionString.write(value.name, into: &buf)
         FfiConverterOptionString.write(value.category, into: &buf)
+        FfiConverterOptionString.write(value.subcategory, into: &buf)
         FfiConverterOptionString.write(value.brand, into: &buf)
         FfiConverterOptionString.write(value.model, into: &buf)
         FfiConverterOptionString.write(value.purchaseDate, into: &buf)
@@ -1128,14 +1177,14 @@ public func FfiConverterTypeUniItemUpdate_lower(_ value: UniItemUpdate) -> RustB
 
 public struct UniListFilter {
     public var category: String?
-    public var location: String?
+    public var subcategory: String?
     public var tags: [String]?
 
     /// Default memberwise initializers are never public by default, so we
     /// declare one manually.
-    public init(category: String?, location: String?, tags: [String]?) {
+    public init(category: String?, subcategory: String?, tags: [String]?) {
         self.category = category
-        self.location = location
+        self.subcategory = subcategory
         self.tags = tags
     }
 }
@@ -1145,7 +1194,7 @@ extension UniListFilter: Equatable, Hashable {
         if lhs.category != rhs.category {
             return false
         }
-        if lhs.location != rhs.location {
+        if lhs.subcategory != rhs.subcategory {
             return false
         }
         if lhs.tags != rhs.tags {
@@ -1156,7 +1205,7 @@ extension UniListFilter: Equatable, Hashable {
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(category)
-        hasher.combine(location)
+        hasher.combine(subcategory)
         hasher.combine(tags)
     }
 }
@@ -1169,14 +1218,14 @@ public struct FfiConverterTypeUniListFilter: FfiConverterRustBuffer {
         return
             try UniListFilter(
                 category: FfiConverterOptionString.read(from: &buf),
-                location: FfiConverterOptionString.read(from: &buf),
+                subcategory: FfiConverterOptionString.read(from: &buf),
                 tags: FfiConverterOptionSequenceString.read(from: &buf)
             )
     }
 
     public static func write(_ value: UniListFilter, into buf: inout [UInt8]) {
         FfiConverterOptionString.write(value.category, into: &buf)
-        FfiConverterOptionString.write(value.location, into: &buf)
+        FfiConverterOptionString.write(value.subcategory, into: &buf)
         FfiConverterOptionSequenceString.write(value.tags, into: &buf)
     }
 }
@@ -1202,6 +1251,7 @@ public struct UniNewItem {
     public var id: String?
     public var name: String
     public var category: String?
+    public var subcategory: String?
     public var brand: String?
     public var model: String?
     public var purchaseDate: String?
@@ -1224,7 +1274,7 @@ public struct UniNewItem {
     public init(
         /* 
          * Optional caller-supplied ID. If empty string, one is generated by the store.
-         */ id: String?, name: String, category: String?, brand: String?, model: String?, purchaseDate: String?, purchasePrice: Double?, currency: String?, warrantyExpires: String?, retailer: String?, location: String?, features: [String]?, notes: String?, tags: [String]?, attachments: [UniAttachment]?,
+         */ id: String?, name: String, category: String?, subcategory: String?, brand: String?, model: String?, purchaseDate: String?, purchasePrice: Double?, currency: String?, warrantyExpires: String?, retailer: String?, location: String?, features: [String]?, notes: String?, tags: [String]?, attachments: [UniAttachment]?,
         /* 
             * JSON-encoded extra fields (pass `"{}"` if none).
             */ extraJson: String
@@ -1232,6 +1282,7 @@ public struct UniNewItem {
         self.id = id
         self.name = name
         self.category = category
+        self.subcategory = subcategory
         self.brand = brand
         self.model = model
         self.purchaseDate = purchaseDate
@@ -1257,6 +1308,9 @@ extension UniNewItem: Equatable, Hashable {
             return false
         }
         if lhs.category != rhs.category {
+            return false
+        }
+        if lhs.subcategory != rhs.subcategory {
             return false
         }
         if lhs.brand != rhs.brand {
@@ -1305,6 +1359,7 @@ extension UniNewItem: Equatable, Hashable {
         hasher.combine(id)
         hasher.combine(name)
         hasher.combine(category)
+        hasher.combine(subcategory)
         hasher.combine(brand)
         hasher.combine(model)
         hasher.combine(purchaseDate)
@@ -1331,6 +1386,7 @@ public struct FfiConverterTypeUniNewItem: FfiConverterRustBuffer {
                 id: FfiConverterOptionString.read(from: &buf),
                 name: FfiConverterString.read(from: &buf),
                 category: FfiConverterOptionString.read(from: &buf),
+                subcategory: FfiConverterOptionString.read(from: &buf),
                 brand: FfiConverterOptionString.read(from: &buf),
                 model: FfiConverterOptionString.read(from: &buf),
                 purchaseDate: FfiConverterOptionString.read(from: &buf),
@@ -1351,6 +1407,7 @@ public struct FfiConverterTypeUniNewItem: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.id, into: &buf)
         FfiConverterString.write(value.name, into: &buf)
         FfiConverterOptionString.write(value.category, into: &buf)
+        FfiConverterOptionString.write(value.subcategory, into: &buf)
         FfiConverterOptionString.write(value.brand, into: &buf)
         FfiConverterOptionString.write(value.model, into: &buf)
         FfiConverterOptionString.write(value.purchaseDate, into: &buf)
@@ -1456,6 +1513,7 @@ public enum CatalogError {
     case Io(message: String)
     case Json(message: String)
     case InvalidFilename(filename: String)
+    case Cache(message: String)
 }
 
 #if swift(>=5.8)
@@ -1479,6 +1537,9 @@ public struct FfiConverterTypeCatalogError: FfiConverterRustBuffer {
         case 4: return try .InvalidFilename(
                 filename: FfiConverterString.read(from: &buf)
             )
+        case 5: return try .Cache(
+                message: FfiConverterString.read(from: &buf)
+            )
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -1500,6 +1561,10 @@ public struct FfiConverterTypeCatalogError: FfiConverterRustBuffer {
         case let .InvalidFilename(filename):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(filename, into: &buf)
+
+        case let .Cache(message):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(message, into: &buf)
         }
     }
 }
@@ -1765,7 +1830,16 @@ private var initializationResult: InitializationResult = {
     if uniffi_allourthings_core_checksum_method_unicatalogstore_get_item() != 33540 {
         return InitializationResult.apiChecksumMismatch
     }
+    if uniffi_allourthings_core_checksum_method_unicatalogstore_get_item_fields() != 29644 {
+        return InitializationResult.apiChecksumMismatch
+    }
     if uniffi_allourthings_core_checksum_method_unicatalogstore_list_items() != 56893 {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if uniffi_allourthings_core_checksum_method_unicatalogstore_rebuild_cache() != 55026 {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if uniffi_allourthings_core_checksum_method_unicatalogstore_refresh() != 459 {
         return InitializationResult.apiChecksumMismatch
     }
     if uniffi_allourthings_core_checksum_method_unicatalogstore_search_items() != 64112 {
@@ -1775,6 +1849,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if uniffi_allourthings_core_checksum_constructor_unicatalogstore_new() != 1266 {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if uniffi_allourthings_core_checksum_constructor_unicatalogstore_new_with_cache() != 18926 {
         return InitializationResult.apiChecksumMismatch
     }
 
