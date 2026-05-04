@@ -381,6 +381,9 @@ impl CatalogStore {
         if query.is_empty() {
             return Ok(vec![]);
         }
+        if let Some(ref cache) = self.cache {
+            return cache.search(query);
+        }
         let lower = query.to_lowercase();
         let items = self.load_all()?;
         Ok(items
