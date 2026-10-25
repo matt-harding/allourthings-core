@@ -501,6 +501,19 @@ mod write_rules {
     }
 
     #[test]
+    fn item_metadata_file_cannot_be_used_as_an_attachment() {
+        let (store, _t) = store();
+        let item = store.add_item(named("Fridge")).unwrap();
+        for name in ["item.json", "ITEM.JSON", "item.json.tmp"] {
+            let added = store.add_attachment(&item.id, name, AttachmentType::Other, b"x", None);
+            assert!(matches!(added, Err(Error::InvalidFilename(_))), "{name} must be rejected");
+            assert!(matches!(store.get_attachment(&item.id, name), Err(Error::InvalidFilename(_))));
+            assert!(matches!(store.delete_attachment(&item.id, name), Err(Error::InvalidFilename(_))));
+        }
+        assert_eq!(store.get_item(&item.id).unwrap().unwrap().name, "Fridge");
+    }
+
+    #[test]
     fn replacing_an_attachment_keeps_its_label() {
         let (store, _t) = store();
         let item = store.add_item(named("Oven")).unwrap();

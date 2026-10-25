@@ -504,6 +504,11 @@ impl CatalogStore {
     /// (e.g. `../escape`, `/etc/passwd`, `.`). Only a single `Normal` component
     /// is accepted.
     fn validate_filename(filename: &str) -> Result<(), Error> {
+        // Case-insensitive because macOS and Windows filesystems are.
+        let lower = filename.to_lowercase();
+        if lower == "item.json" || lower == "item.json.tmp" {
+            return Err(Error::InvalidFilename(filename.to_string()));
+        }
         let path = Path::new(filename);
         let mut components = path.components();
         match (components.next(), components.next()) {
