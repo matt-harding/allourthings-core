@@ -7,7 +7,10 @@ use chrono::Utc;
 use crate::cache::CacheDb;
 use crate::error::Error;
 use crate::id::generate_id;
-use crate::item::{Item, ItemUpdate, ListFilter, NewItem};
+use crate::item::{
+    name_key, validate_date, validate_extra_keys, validate_name, validate_price, Item, ItemUpdate,
+    ListFilter, NewItem,
+};
 use crate::slug::to_slug;
 
 /// The main entry point for reading and writing catalog data.
@@ -228,12 +231,63 @@ impl CatalogStore {
     // Public CRUD API
     // -------------------------------------------------------------------------
 
+    fn validate_common(
+        purchase_date: Option<&str>,
+        warranty_expires: Option<&str>,
+        purchase_price: Option<f64>,
+        extra: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<(), Error> {
+        if let Some(d) = purchase_date {
+            validate_date("purchase_date", d)?;
+        }
+        if let Some(d) = warranty_expires {
+            validate_date("warranty_expires", d)?;
+        }
+        if let Some(p) = purchase_price {
+            validate_price(p)?;
+        }
+        validate_extra_keys(extra)
+    }
+
+    /// Reads from disk, not the cache, so names written by other clients count.
+    fn find_by_name_key(&self, key: &str, exclude_id: Option<&str>) -> Result<Option<Item>, Error> {
+        Ok(self
+            .load_all()?
+            .into_iter()
+            .find(|i| Some(i.id.as_str()) != exclude_id && name_key(&i.name) == key))
+    }
+
+    fn is_valid_id(id: &str) -> bool {
+        id.len() == 8 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+
     pub fn add_item(&self, new_item: NewItem) -> Result<Item, Error> {
-        let id = new_item.id.clone().unwrap_or_else(generate_id);
+        let name = validate_name(&new_item.name)?;
+        Self::validate_common(
+            new_item.purchase_date.as_deref(),
+            new_item.warranty_expires.as_deref(),
+            new_item.purchase_price,
+            &new_item.extra,
+        )?;
+        let id = match new_item.id.clone() {
+            Some(id) => {
+                if !Self::is_valid_id(&id) {
+                    return Err(Error::Validation(format!("id must be 8 lowercase hex characters (got \"{id}\")")));
+                }
+                if self.find_dir_by_id(&id)?.is_some() {
+                    return Err(Error::DuplicateId(id));
+                }
+                id
+            }
+            None => generate_id(),
+        };
+        if let Some(existing) = self.find_by_name_key(&name_key(&name), None)? {
+            return Err(Error::DuplicateName { name: existing.name, existing_id: existing.id });
+        }
         let now = Self::now_iso8601();
         let item = Item {
             id: id.clone(),
-            name: new_item.name.clone(),
+            name,
             created_at: now.clone(),
             updated_at: now,
             category: new_item.category,
@@ -269,15 +323,26 @@ impl CatalogStore {
         if let Some(dir) = self.find_dir_by_id(id_or_name)? {
             return Ok(Self::read_item_from_dir(&dir)?);
         }
-        // Fall back to name search (exact, then substring)
+        // Fall back to name search (exact, then substring); never guess between several.
         let items = self.load_all()?;
-        let lower = id_or_name.to_lowercase();
-        let found = items
-            .iter()
-            .find(|i| i.name.to_lowercase() == lower)
-            .or_else(|| items.iter().find(|i| i.name.to_lowercase().contains(&lower)))
-            .cloned();
-        Ok(found)
+        let key = name_key(id_or_name);
+        if key.is_empty() {
+            return Ok(None);
+        }
+        let exact: Vec<&Item> = items.iter().filter(|i| name_key(&i.name) == key).collect();
+        let candidates = if exact.is_empty() {
+            items.iter().filter(|i| name_key(&i.name).contains(&key)).collect()
+        } else {
+            exact
+        };
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [one] => Ok(Some((*one).clone())),
+            many => Err(Error::Ambiguous {
+                query: id_or_name.to_string(),
+                ids: many.iter().map(|i| i.id.clone()).collect(),
+            }),
+        }
     }
 
     pub fn list_items(&self, filter: Option<ListFilter>) -> Result<Vec<Item>, Error> {
@@ -312,11 +377,30 @@ impl CatalogStore {
             None => return Ok(None),
         };
 
-        let new_name = updates.name.unwrap_or(existing.name.clone());
+        Self::validate_common(
+            updates.purchase_date.as_deref(),
+            updates.warranty_expires.as_deref(),
+            updates.purchase_price,
+            &updates.extra,
+        )?;
+        let new_name = match updates.name.as_deref() {
+            Some(n) => validate_name(n)?,
+            None => existing.name.clone(),
+        };
+        if name_key(&new_name) != name_key(&existing.name) {
+            if let Some(other) = self.find_by_name_key(&name_key(&new_name), Some(id))? {
+                return Err(Error::DuplicateName { name: other.name, existing_id: other.id });
+            }
+        }
+        for field in &updates.clear {
+            if matches!(field.as_str(), "name" | "id" | "created_at" | "updated_at" | "attachments") {
+                return Err(Error::Validation(format!("{field} cannot be cleared")));
+            }
+        }
         let mut merged_extra = existing.extra.clone();
         merged_extra.extend(updates.extra);
 
-        let updated = Item {
+        let mut updated = Item {
             id: existing.id.clone(),
             name: new_name.clone(),
             created_at: existing.created_at.clone(),
@@ -337,6 +421,9 @@ impl CatalogStore {
             attachments: updates.attachments.or(existing.attachments),
             extra: merged_extra,
         };
+        for field in &updates.clear {
+            Self::clear_field(&mut updated, field);
+        }
 
         let new_dir = self.item_dir_path(&new_name, id);
         if old_dir != new_dir {
@@ -348,6 +435,27 @@ impl CatalogStore {
             cache.upsert(&updated, mtime)?;
         }
         Ok(Some(updated))
+    }
+
+    fn clear_field(item: &mut Item, field: &str) {
+        match field {
+            "category" => item.category = None,
+            "subcategory" => item.subcategory = None,
+            "brand" => item.brand = None,
+            "model" => item.model = None,
+            "purchase_date" => item.purchase_date = None,
+            "purchase_price" => item.purchase_price = None,
+            "currency" => item.currency = None,
+            "warranty_expires" => item.warranty_expires = None,
+            "retailer" => item.retailer = None,
+            "location" => item.location = None,
+            "features" => item.features = None,
+            "notes" => item.notes = None,
+            "tags" => item.tags = None,
+            other => {
+                item.extra.remove(other);
+            }
+        }
     }
 
     pub fn delete_item(&self, id: &str) -> Result<bool, Error> {
@@ -378,18 +486,14 @@ impl CatalogStore {
     }
 
     pub fn search_items(&self, query: &str) -> Result<Vec<Item>, Error> {
-        if query.is_empty() {
+        if query.trim().is_empty() {
             return Ok(vec![]);
         }
-        if let Some(ref cache) = self.cache {
-            return cache.search(query);
-        }
-        let lower = query.to_lowercase();
-        let items = self.load_all()?;
-        Ok(items
-            .into_iter()
-            .filter(|i| serde_json::to_string(i).unwrap_or_default().to_lowercase().contains(&lower))
-            .collect())
+        let items = match self.cache {
+            Some(ref cache) => cache.list_filtered(None)?,
+            None => self.load_all()?,
+        };
+        Ok(items.into_iter().filter(|i| i.matches_query(query)).collect())
     }
 
     // -------------------------------------------------------------------------
@@ -427,11 +531,12 @@ impl CatalogStore {
 
         fs::write(dir.join(filename), data)?;
 
-        let new_attachment = crate::item::Attachment { filename: filename.to_string(), kind, label };
         let mut attachments = item.attachments.unwrap_or_default();
         if let Some(pos) = attachments.iter().position(|a| a.filename == filename) {
-            attachments[pos] = new_attachment;
+            let label = label.or_else(|| attachments[pos].label.take());
+            attachments[pos] = crate::item::Attachment { filename: filename.to_string(), kind, label };
         } else {
+            let new_attachment = crate::item::Attachment { filename: filename.to_string(), kind, label };
             attachments.push(new_attachment);
         }
         item.attachments = Some(attachments);
@@ -450,7 +555,13 @@ impl CatalogStore {
         Self::validate_filename(filename)?;
         let dir = self.find_dir_by_id(item_id)?
             .ok_or_else(|| Error::NotFound(item_id.to_string()))?;
-        Ok(fs::read(dir.join(filename))?)
+        fs::read(dir.join(filename)).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Error::AttachmentNotFound {
+                item_id: item_id.to_string(),
+                filename: filename.to_string(),
+            },
+            _ => Error::Io(e),
+        })
     }
 
     /// Delete an attachment file and remove its record from `item.json`.
@@ -467,6 +578,13 @@ impl CatalogStore {
         };
 
         let file_path = dir.join(filename);
+        let has_record = item.attachments.iter().flatten().any(|a| a.filename == filename);
+        if !has_record && !file_path.exists() {
+            return Err(Error::AttachmentNotFound {
+                item_id: item_id.to_string(),
+                filename: filename.to_string(),
+            });
+        }
         if file_path.exists() {
             fs::remove_file(&file_path)?;
         }

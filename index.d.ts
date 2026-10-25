@@ -18,16 +18,16 @@ export interface JsListFilter {
  */
 export declare class JsCatalogStore {
   constructor(dataDir: string, cacheDir?: string | undefined | null)
-  refresh(): NapiResult
-  rebuildCache(): NapiResult
-  addItem(newItem: any): NapiResult
-  getItem(idOrName: string): NapiResult
-  listItems(filter?: JsListFilter | undefined | null): NapiResult
-  updateItem(id: string, updates: any): NapiResult
-  deleteItem(id: string): NapiResult
-  searchItems(query: string): NapiResult
-  getItemFields(): NapiResult
-  addAttachment(itemId: string, filename: string, kind: string, data: Buffer, label?: string | undefined | null): NapiResult
-  getAttachment(itemId: string, filename: string): NapiResult
-  deleteAttachment(itemId: string, filename: string): NapiResult
+  refresh(): void
+  rebuildCache(): void
+  addItem(newItem: any): any
+  getItem(idOrName: string): any | null
+  listItems(filter?: JsListFilter | undefined | null): any
+  updateItem(id: string, updates: any): any | null
+  deleteItem(id: string): boolean
+  searchItems(query: string): any
+  getItemFields(): Array<string>
+  addAttachment(itemId: string, filename: string, kind: string, data: Buffer, label?: string | undefined | null): any
+  getAttachment(itemId: string, filename: string): Buffer
+  deleteAttachment(itemId: string, filename: string): any | null
 }

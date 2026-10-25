@@ -26,6 +26,21 @@ pub enum CatalogError {
 
     #[error("cache error: {message}")]
     Cache { message: String },
+
+    #[error("invalid input: {message}")]
+    Validation { message: String },
+
+    #[error("an item named \"{name}\" already exists")]
+    DuplicateName { name: String, existing_id: String },
+
+    #[error("an item with id {id} already exists")]
+    DuplicateId { id: String },
+
+    #[error("\"{query}\" matches more than one item")]
+    Ambiguous { query: String, ids: Vec<String> },
+
+    #[error("attachment not found: {filename}")]
+    AttachmentNotFound { item_id: String, filename: String },
 }
 
 impl From<Error> for CatalogError {
@@ -36,6 +51,13 @@ impl From<Error> for CatalogError {
             Error::Json(e) => CatalogError::Json { message: e.to_string() },
             Error::InvalidFilename(filename) => CatalogError::InvalidFilename { filename },
             Error::Cache(e) => CatalogError::Cache { message: e.to_string() },
+            Error::Validation(message) => CatalogError::Validation { message },
+            Error::DuplicateName { name, existing_id } => CatalogError::DuplicateName { name, existing_id },
+            Error::DuplicateId(id) => CatalogError::DuplicateId { id },
+            Error::Ambiguous { query, ids } => CatalogError::Ambiguous { query, ids },
+            Error::AttachmentNotFound { item_id, filename } => {
+                CatalogError::AttachmentNotFound { item_id, filename }
+            }
         }
     }
 }
@@ -257,6 +279,7 @@ impl TryFrom<UniItemUpdate> for ItemUpdate {
             tags: u.tags,
             attachments: u.attachments.map(|v| v.into_iter().map(Into::into).collect()),
             extra: extra,
+            clear: Vec::new(),
         })
     }
 }

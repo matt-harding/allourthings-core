@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use chrono::{DateTime, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::error::Error;
 
 #[derive(Debug, Default)]
 pub struct ListFilter {
@@ -155,6 +158,100 @@ pub struct ItemUpdate {
     /// extra fields not mentioned here are kept.
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+
+    /// Field names to remove from the item (well-known or custom).
+    #[serde(skip)]
+    pub clear: Vec<String>,
+}
+
+/// Fields managed by the store that callers may never set directly.
+pub const SYSTEM_FIELDS: [&str; 3] = ["id", "created_at", "updated_at"];
+
+pub(crate) fn validate_name(name: &str) -> Result<String, Error> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(Error::Validation("name must not be empty".into()));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Accepts `YYYY-MM-DD` or a full RFC 3339 timestamp.
+pub(crate) fn validate_date(field: &str, value: &str) -> Result<(), Error> {
+    let ok = NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
+        || DateTime::parse_from_rfc3339(value).is_ok();
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Validation(format!(
+            "{field} must be a date in YYYY-MM-DD format (got \"{value}\")"
+        )))
+    }
+}
+
+pub(crate) fn validate_price(price: f64) -> Result<(), Error> {
+    if price.is_finite() && price >= 0.0 {
+        Ok(())
+    } else {
+        Err(Error::Validation(format!(
+            "purchase_price must be a non-negative number (got {price})"
+        )))
+    }
+}
+
+pub(crate) fn validate_extra_keys(extra: &HashMap<String, Value>) -> Result<(), Error> {
+    for key in extra.keys() {
+        if key.trim().is_empty() {
+            return Err(Error::Validation("custom field names must not be empty".into()));
+        }
+        if SYSTEM_FIELDS.contains(&key.as_str()) {
+            return Err(Error::Validation(format!("{key} is managed by AllOurThings and cannot be set")));
+        }
+    }
+    Ok(())
+}
+
+/// Normalised form used for duplicate-name detection.
+pub(crate) fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+fn collect_values(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => out.push(s.to_lowercase()),
+        Value::Number(n) => out.push(n.to_string()),
+        Value::Array(items) => items.iter().for_each(|v| collect_values(v, out)),
+        Value::Object(map) => map.values().for_each(|v| collect_values(v, out)),
+        _ => {}
+    }
+}
+
+impl Item {
+    /// Case-insensitive match of every whitespace-separated query word against
+    /// field values (never field names, ids or timestamps).
+    pub fn matches_query(&self, query: &str) -> bool {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if words.is_empty() {
+            return false;
+        }
+        let Ok(Value::Object(map)) = serde_json::to_value(self) else {
+            return false;
+        };
+        let mut values = Vec::new();
+        for (key, value) in &map {
+            if SYSTEM_FIELDS.contains(&key.as_str()) {
+                continue;
+            }
+            if key == "attachments" {
+                for att in value.as_array().into_iter().flatten() {
+                    collect_values(&att["filename"], &mut values);
+                    collect_values(&att["label"], &mut values);
+                }
+                continue;
+            }
+            collect_values(value, &mut values);
+        }
+        words.iter().all(|w| values.iter().any(|v| v.contains(w.as_str())))
+    }
 }
 
 #[cfg(test)]

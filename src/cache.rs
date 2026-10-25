@@ -181,28 +181,4 @@ impl CacheDb {
 
         Ok(items)
     }
-
-    /// Full-text search over serialised item JSON, equivalent to the no-cache
-    /// path but using SQLite's LIKE operator against the stored data column.
-    pub fn search(&self, query: &str) -> Result<Vec<Item>, Error> {
-        let pattern = format!("%{}%", query.to_lowercase());
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT data FROM items WHERE LOWER(data) LIKE ?1",
-        )?;
-        let items: Vec<Item> = stmt
-            .query_map([pattern], |row| {
-                let json: String = row.get(0)?;
-                serde_json::from_str(&json).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(items)
-    }
 }
