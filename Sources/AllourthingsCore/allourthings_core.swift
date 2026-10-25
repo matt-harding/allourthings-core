@@ -1514,6 +1514,11 @@ public enum CatalogError {
     case Json(message: String)
     case InvalidFilename(filename: String)
     case Cache(message: String)
+    case Validation(message: String)
+    case DuplicateName(name: String, existingId: String)
+    case DuplicateId(id: String)
+    case Ambiguous(query: String, ids: [String])
+    case AttachmentNotFound(itemId: String, filename: String)
 }
 
 #if swift(>=5.8)
@@ -1540,6 +1545,24 @@ public struct FfiConverterTypeCatalogError: FfiConverterRustBuffer {
         case 5: return try .Cache(
                 message: FfiConverterString.read(from: &buf)
             )
+        case 6: return try .Validation(
+                message: FfiConverterString.read(from: &buf)
+            )
+        case 7: return try .DuplicateName(
+                name: FfiConverterString.read(from: &buf),
+                existingId: FfiConverterString.read(from: &buf)
+            )
+        case 8: return try .DuplicateId(
+                id: FfiConverterString.read(from: &buf)
+            )
+        case 9: return try .Ambiguous(
+                query: FfiConverterString.read(from: &buf),
+                ids: FfiConverterSequenceString.read(from: &buf)
+            )
+        case 10: return try .AttachmentNotFound(
+                itemId: FfiConverterString.read(from: &buf),
+                filename: FfiConverterString.read(from: &buf)
+            )
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -1565,6 +1588,29 @@ public struct FfiConverterTypeCatalogError: FfiConverterRustBuffer {
         case let .Cache(message):
             writeInt(&buf, Int32(5))
             FfiConverterString.write(message, into: &buf)
+
+        case let .Validation(message):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(message, into: &buf)
+
+        case let .DuplicateName(name, existingId):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(name, into: &buf)
+            FfiConverterString.write(existingId, into: &buf)
+
+        case let .DuplicateId(id):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(id, into: &buf)
+
+        case let .Ambiguous(query, ids):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(query, into: &buf)
+            FfiConverterSequenceString.write(ids, into: &buf)
+
+        case let .AttachmentNotFound(itemId, filename):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(itemId, into: &buf)
+            FfiConverterString.write(filename, into: &buf)
         }
     }
 }
