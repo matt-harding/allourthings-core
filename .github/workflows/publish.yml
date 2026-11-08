@@ -4,9 +4,15 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, e.g. 2.1.0'
+        required: true
 
 env:
   MACOSX_DEPLOYMENT_TARGET: '10.13'
+  VERSION: ${{ inputs.version || github.ref_name }}
 
 jobs:
   build:
@@ -72,7 +78,7 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Set version from tag
-        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+        run: npm version "${VERSION#v}" --no-git-tag-version --allow-same-version
 
       - name: Publish
         run: npm publish --access public
@@ -91,7 +97,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Set version from tag
-        run: sed -i "s/^version = \".*\"/version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml
+        run: sed -i "s/^version = \".*\"/version = \"${VERSION#v}\"/" Cargo.toml
 
       - name: Publish
         run: cargo publish --no-verify --allow-dirty
