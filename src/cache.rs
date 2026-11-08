@@ -101,7 +101,7 @@ impl CacheDb {
     }
 
     pub fn upsert(&self, item: &Item, file_mtime: i64) -> Result<(), Error> {
-        let tags_json = item.tags.as_ref().map(|t| serde_json::to_string(t)).transpose()?;
+        let tags_json = item.tags.as_ref().map(serde_json::to_string).transpose()?;
         let data = serde_json::to_string(item)?;
         let conn = self.conn.lock().unwrap();
 
@@ -247,16 +247,7 @@ impl CacheDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&sql)?;
         let items: Vec<Item> = stmt
-            .query_map(rusqlite::params_from_iter(params), |row| {
-                let json: String = row.get(0)?;
-                serde_json::from_str(&json).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })
-            })?
+            .query_map(rusqlite::params_from_iter(params), |row| row_to_item(&row.get::<_, String>(0)?))?
             .filter_map(|r| r.ok())
             .collect();
 
