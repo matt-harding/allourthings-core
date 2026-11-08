@@ -149,6 +149,21 @@ impl JsCatalogStore {
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
+    /// Ranked search: `[{ item, matchedAll }]`, best match first.
+    #[napi]
+    pub fn search(&self, query: String, limit: Option<u32>) -> Result<Value> {
+        let hits = self.inner.search(&query, limit.map(|l| l as usize)).map_err(to_napi)?;
+        let results: Vec<Value> = hits
+            .into_iter()
+            .map(|h| -> Result<Value> {
+                let item = serde_json::to_value(h.item)
+                    .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+                Ok(serde_json::json!({ "item": item, "matchedAll": h.matched_all }))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Value::Array(results))
+    }
+
     #[napi]
     pub fn get_item_fields(&self) -> Result<Vec<String>> {
         self.inner.get_item_fields().map_err(to_napi)

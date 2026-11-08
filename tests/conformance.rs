@@ -568,10 +568,212 @@ mod search {
             assert!(names(&store, "created").is_empty());
             assert!(names(&store, "\"").is_empty(), "JSON punctuation must not match");
             assert!(names(&store, "_").is_empty(), "SQL wildcard must not match everything");
-            assert_eq!(names(&store, "%"), vec!["Dishwasher"], "% is literal");
-            assert_eq!(names(&store, "bosch kitchen"), vec!["Dishwasher"], "all words must match");
+            assert!(names(&store, "%").is_empty(), "punctuation-only queries match nothing");
+            assert_eq!(names(&store, "50%"), vec!["Dishwasher"], "numbers next to punctuation still match");
+            assert_eq!(names(&store, "bosch kitchen"), vec!["Dishwasher"]);
             assert_eq!(names(&store, "SMEG"), vec!["Kettle"]);
             assert!(names(&store, "   ").is_empty());
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ranked full-text search (FTS5, porter): MCP_V2_1_PLAN.md R11
+// ---------------------------------------------------------------------------
+
+mod ranked_search {
+    use super::*;
+    use allourthings_core::item::{AttachmentType, NewItem};
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn item(name: &str) -> NewItem {
+        NewItem { name: name.into(), ..Default::default() }
+    }
+
+    /// Items modelled on a real household vault.
+    fn household(with_cache: bool) -> (CatalogStore, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let store = if with_cache {
+            CatalogStore::new_with_cache(tmp.path(), tmp.path().join("cache")).unwrap()
+        } else {
+            CatalogStore::new(tmp.path())
+        };
+        let kitchen = |name: &str| NewItem {
+            category: Some("Appliance".into()),
+            subcategory: Some("Kitchen Appliance".into()),
+            ..item(name)
+        };
+        let music = |name: &str| NewItem {
+            category: Some("Electronic".into()),
+            subcategory: Some("Music".into()),
+            ..item(name)
+        };
+        store.add_item(kitchen("Washing Machine")).unwrap();
+        store.add_item(kitchen("Wine Fridge")).unwrap();
+        store.add_item(NewItem { brand: Some("Smeg".into()), ..kitchen("Oven") }).unwrap();
+        store.add_item(music("Studio Monitors")).unwrap();
+        store.add_item(music("Turntable")).unwrap();
+        let boiler = store
+            .add_item(NewItem {
+                category: Some("Heating".into()),
+                brand: Some("Vaillant".into()),
+                model: Some("ecoTec plus 831".into()),
+                ..item("Boiler")
+            })
+            .unwrap();
+        store
+            .add_attachment(
+                &boiler.id,
+                "vaillant-ecotec-plus-operating-instructions.pdf",
+                AttachmentType::Manual,
+                b"%PDF",
+                Some("Vaillant ecoTEC plus operating instructions".into()),
+            )
+            .unwrap();
+        store
+            .add_item(NewItem {
+                category: Some("Collectible".into()),
+                notes: Some("Graded PSA 9".into()),
+                ..item("Pokémon Card Pikachu")
+            })
+            .unwrap();
+        (store, tmp)
+    }
+
+    fn ranked(store: &CatalogStore, q: &str) -> Vec<String> {
+        store.search(q, None).unwrap().into_iter().map(|h| h.item.name).collect()
+    }
+
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn stemming_accents_and_any_word_matching() {
+        for with_cache in [false, true] {
+            let (store, _t) = household(with_cache);
+            assert_eq!(
+                sorted(ranked(&store, "kitchen appliances")),
+                vec!["Oven", "Washing Machine", "Wine Fridge"],
+                "plurals match singular (cache: {with_cache})"
+            );
+            assert_eq!(ranked(&store, "vaillant boiler manual"), vec!["Boiler"]);
+            assert_eq!(ranked(&store, "pokemon"), vec!["Pokémon Card Pikachu"], "accents ignored");
+            assert_eq!(ranked(&store, "fridges"), vec!["Wine Fridge"]);
+            assert_eq!(ranked(&store, "ecotec"), vec!["Boiler"]);
+            assert_eq!(ranked(&store, "turntables music"), vec!["Turntable", "Studio Monitors"], "name outranks category");
+        }
+    }
+
+    #[test]
+    fn lexical_only_no_synonyms_or_typos() {
+        let (store, _t) = household(true);
+        assert!(ranked(&store, "refrigerator").is_empty());
+        assert!(ranked(&store, "valiant").is_empty());
+    }
+
+    #[test]
+    fn name_matches_rank_above_other_fields() {
+        let (store, _t) = household(true);
+        store.add_item(NewItem { notes: Some("next to the oven".into()), ..item("Spice Rack") }).unwrap();
+        assert_eq!(ranked(&store, "oven"), vec!["Oven", "Spice Rack"]);
+    }
+
+    #[test]
+    fn matched_all_and_limit() {
+        let (store, _t) = household(true);
+        let hits = store.search("vaillant kitchen", None).unwrap();
+        assert!(hits.len() >= 4, "any word matches");
+        assert!(hits.iter().all(|h| !h.matched_all), "no item has both words");
+
+        let hits = store.search("smeg oven", None).unwrap();
+        assert_eq!(hits[0].item.name, "Oven");
+        assert!(hits[0].matched_all);
+
+        assert_eq!(store.search("kitchen", Some(2)).unwrap().len(), 2);
+        assert!(store.search("kitchen", Some(0)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn query_syntax_is_treated_as_text() {
+        let (store, _t) = household(true);
+        for q in ["\"", "*", "kitchen*", "kitchen AND", "NEAR(kitchen fridge)", "name:oven", "-oven", "^oven", "(", "oven OR"] {
+            assert!(store.search(q, None).is_ok(), "{q:?} must not be an FTS5 syntax error");
+        }
+        assert!(ranked(&store, "AND OR NOT").is_empty(), "operators are just words");
+        assert_eq!(ranked(&store, "\"oven\""), vec!["Oven"]);
+    }
+
+    #[test]
+    fn ids_timestamps_and_field_names_never_match() {
+        let (store, _t) = household(true);
+        let oven = store.get_item("Oven").unwrap().unwrap();
+        assert!(ranked(&store, &oven.id).is_empty());
+        assert!(ranked(&store, "2026").is_empty(), "timestamps aren't indexed");
+        for field in ["name", "brand", "category", "subcategory", "attachments", "filename"] {
+            assert!(ranked(&store, field).is_empty(), "{field} must not match");
+        }
+    }
+
+    #[test]
+    fn custom_fields_and_attachment_kinds_are_searchable() {
+        let (store, _t) = household(true);
+        let mut extra = HashMap::new();
+        extra.insert("serial_number".to_string(), Value::String("ZX81-4421".into()));
+        store.add_item(NewItem { extra, ..item("Router") }).unwrap();
+        assert_eq!(ranked(&store, "zx81"), vec!["Router"]);
+        assert_eq!(ranked(&store, "manual"), vec!["Boiler"]);
+    }
+
+    #[test]
+    fn index_follows_updates_and_deletes() {
+        let (store, _t) = household(true);
+        let oven = store.get_item("Oven").unwrap().unwrap();
+        store
+            .update_item(&oven.id, allourthings_core::item::ItemUpdate { brand: Some("Neff".into()), ..Default::default() })
+            .unwrap();
+        assert!(ranked(&store, "smeg").is_empty());
+        assert_eq!(ranked(&store, "neff"), vec!["Oven"]);
+
+        store.delete_attachment(&store.get_item("Boiler").unwrap().unwrap().id, "vaillant-ecotec-plus-operating-instructions.pdf").unwrap();
+        assert!(ranked(&store, "manual").is_empty());
+
+        store.delete_item(&oven.id).unwrap();
+        assert!(ranked(&store, "neff").is_empty());
+    }
+
+    #[test]
+    fn external_changes_are_indexed_on_refresh() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        CatalogStore::new(tmp.path()).add_item(item("Kettle")).unwrap();
+
+        let store = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
+        store.refresh().unwrap();
+        assert_eq!(ranked(&store, "kettle"), vec!["Kettle"]);
+    }
+
+    #[test]
+    fn old_caches_rebuild_the_index_on_refresh() {
+        let tmp = TempDir::new().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        {
+            let store = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
+            store.add_item(item("Kettle")).unwrap();
+        }
+        // Simulate a cache written by core 2.0: no index rows, schema version 2.
+        let conn = rusqlite::Connection::open(cache_dir.join("catalog.db")).unwrap();
+        conn.execute_batch(
+            "DROP TABLE items_fts; UPDATE _meta SET value = '2' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
+        store.refresh().unwrap();
+        assert_eq!(ranked(&store, "kettle"), vec!["Kettle"]);
     }
 }

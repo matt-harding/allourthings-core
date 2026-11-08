@@ -9,7 +9,7 @@ use crate::error::Error;
 use crate::id::generate_id;
 use crate::item::{
     name_key, validate_date, validate_extra_keys, validate_name, validate_price, Item, ItemUpdate,
-    ListFilter, NewItem,
+    ListFilter, NewItem, SearchHit,
 };
 use crate::slug::to_slug;
 
@@ -485,15 +485,22 @@ impl CatalogStore {
         Ok(fields.into_iter().collect())
     }
 
-    pub fn search_items(&self, query: &str) -> Result<Vec<Item>, Error> {
-        if query.trim().is_empty() {
-            return Ok(vec![]);
+    /// Ranked full-text search (English stemming, accents ignored). Items match
+    /// if they contain any query word; best matches first.
+    pub fn search(&self, query: &str, limit: Option<usize>) -> Result<Vec<SearchHit>, Error> {
+        if let Some(ref cache) = self.cache {
+            return cache.search(query, limit);
         }
-        let items = match self.cache {
-            Some(ref cache) => cache.list_filtered(None)?,
-            None => self.load_all()?,
-        };
-        Ok(items.into_iter().filter(|i| i.matches_query(query)).collect())
+        let temp = CacheDb::open_in_memory()?;
+        for item in self.load_all()? {
+            temp.upsert(&item, 0)?;
+        }
+        temp.search(query, limit)
+    }
+
+    /// Ranked search returning just the items. See [`CatalogStore::search`].
+    pub fn search_items(&self, query: &str) -> Result<Vec<Item>, Error> {
+        Ok(self.search(query, None)?.into_iter().map(|h| h.item).collect())
     }
 
     // -------------------------------------------------------------------------

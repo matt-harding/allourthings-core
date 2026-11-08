@@ -34,6 +34,17 @@ The `<hash>` is a SHA-256 of the data directory path, so multiple vaults each ge
 
 The cache schema indexes `category`, `subcategory`, and `tags` for SQL filtering, and stores the full item as a JSON blob for everything else. All three are optional on any item — items missing them are stored and returned normally, they just won't appear when those specific filters are applied. Keeping the indexed columns to only those actually queried means new well-known fields can be added without any schema migration.
 
+## Search
+
+`search(query, limit)` is ranked full-text search using SQLite FTS5 with the `porter unicode61 remove_diacritics 2` tokenizer:
+
+- Words are lowercased, accents are ignored (`pokemon` finds "Pokémon"), and English word endings are stemmed (`appliances` finds "Appliance").
+- An item matches if it contains **any** query word. Results are ordered by relevance (BM25), weighting the item name highest, then brand/model, then category/subcategory/tags, then notes, other fields and attachments (filename, label, kind). Each result reports `matched_all` when every query word was found.
+- Field names, IDs and timestamps are never searched. Query text is always matched as words, never as FTS5 query syntax.
+- Search is lexical: synonyms (`refrigerator` vs "fridge") and typos don't match. Stemming is English only.
+
+The index lives in the query cache (`items_fts`) and is kept in step with every write and `refresh()`. Stores without a cache build the same index in memory for each search, so results are identical either way. `search_items(query)` returns the same ranked items without the metadata.
+
 ## Running tests
 
 ```bash
