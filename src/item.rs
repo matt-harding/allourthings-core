@@ -225,9 +225,72 @@ fn collect_values(value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// A ranked search result.
+#[derive(Debug, Clone)]
+pub struct SearchHit {
+    pub item: Item,
+    /// Every query word was found in the item, not just some of them.
+    pub matched_all: bool,
+}
+
+/// Text for each full-text search column, in index order. Field names, ids and
+/// timestamps are never included.
+pub(crate) struct SearchText {
+    pub name: String,
+    pub brand_model: String,
+    pub categories: String,
+    pub notes: String,
+    pub attachments: String,
+}
+
+fn join_present<'a>(parts: impl IntoIterator<Item = Option<&'a str>>) -> String {
+    parts.into_iter().flatten().collect::<Vec<_>>().join(" ")
+}
+
 impl Item {
+    pub(crate) fn search_text(&self) -> SearchText {
+        let tags = self.tags.as_ref().map(|t| t.join(" "));
+        let features = self.features.as_ref().map(|f| f.join(" "));
+        let mut extra = Vec::new();
+        for value in self.extra.values() {
+            collect_values(value, &mut extra);
+        }
+        let extra = extra.join(" ");
+        let attachments = self
+            .attachments
+            .iter()
+            .flatten()
+            .map(|a| {
+                let kind = match a.kind {
+                    AttachmentType::Manual => "manual",
+                    AttachmentType::Receipt => "receipt",
+                    AttachmentType::Photo => "photo",
+                    AttachmentType::Warranty => "warranty",
+                    AttachmentType::Other => "other",
+                };
+                join_present([Some(a.filename.as_str()), a.label.as_deref(), Some(kind)])
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        SearchText {
+            name: self.name.clone(),
+            brand_model: join_present([self.brand.as_deref(), self.model.as_deref()]),
+            categories: join_present([self.category.as_deref(), self.subcategory.as_deref(), tags.as_deref()]),
+            notes: join_present([
+                self.notes.as_deref(),
+                features.as_deref(),
+                self.retailer.as_deref(),
+                self.location.as_deref(),
+                Some(extra.as_str()),
+            ]),
+            attachments,
+        }
+    }
+
     /// Case-insensitive match of every whitespace-separated query word against
     /// field values (never field names, ids or timestamps).
+    #[deprecated(since = "2.1.0", note = "use CatalogStore::search for ranked full-text search")]
     pub fn matches_query(&self, query: &str) -> bool {
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
         if words.is_empty() {

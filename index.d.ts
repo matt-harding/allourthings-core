@@ -26,6 +26,8 @@ export declare class JsCatalogStore {
   updateItem(id: string, updates: any): any | null
   deleteItem(id: string): boolean
   searchItems(query: string): any
+  /** Ranked search: `[{ item, matchedAll }]`, best match first. */
+  search(query: string, limit?: number | undefined | null): any
   getItemFields(): Array<string>
   addAttachment(itemId: string, filename: string, kind: string, data: Buffer, label?: string | undefined | null): any
   getAttachment(itemId: string, filename: string): Buffer

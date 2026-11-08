@@ -5,7 +5,7 @@ pub mod storage;
 pub mod error;
 pub mod cache;
 
-pub use item::{Item, NewItem, Attachment, ListFilter};
+pub use item::{Item, NewItem, Attachment, ListFilter, SearchHit};
 pub use storage::CatalogStore;
 pub use error::Error;
 

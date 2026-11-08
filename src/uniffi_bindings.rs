@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     error::Error,
-    item::{Attachment as CoreAttachment, AttachmentType, Item as CoreItem, ItemUpdate, ListFilter, NewItem},
+    item::{Attachment as CoreAttachment, AttachmentType, Item as CoreItem, ItemUpdate, ListFilter, NewItem, SearchHit},
     storage::CatalogStore,
 };
 
@@ -302,6 +302,22 @@ impl From<UniListFilter> for ListFilter {
 }
 
 // ---------------------------------------------------------------------------
+// UniSearchHit
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct UniSearchHit {
+    pub item: UniItem,
+    pub matched_all: bool,
+}
+
+impl From<SearchHit> for UniSearchHit {
+    fn from(h: SearchHit) -> Self {
+        UniSearchHit { item: h.item.into(), matched_all: h.matched_all }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // UniCatalogStore
 // ---------------------------------------------------------------------------
 
@@ -366,6 +382,13 @@ impl UniCatalogStore {
         self.inner
             .search_items(&query)
             .map(|v| v.into_iter().map(UniItem::from).collect())
+            .map_err(Into::into)
+    }
+
+    pub fn search(&self, query: String, limit: Option<u32>) -> Result<Vec<UniSearchHit>, CatalogError> {
+        self.inner
+            .search(&query, limit.map(|l| l as usize))
+            .map(|v| v.into_iter().map(UniSearchHit::from).collect())
             .map_err(Into::into)
     }
 

@@ -9,7 +9,7 @@ use crate::error::Error;
 use crate::id::generate_id;
 use crate::item::{
     name_key, validate_date, validate_extra_keys, validate_name, validate_price, Item, ItemUpdate,
-    ListFilter, NewItem,
+    ListFilter, NewItem, SearchHit,
 };
 use crate::slug::to_slug;
 
@@ -45,22 +45,36 @@ impl CatalogStore {
         self.items_dir().join(format!("{}-{}", to_slug(name), id))
     }
 
-    /// Scan items/ for the directory whose name ends with `-<id>`.
-    fn find_dir_by_id(&self, id: &str) -> Result<Option<PathBuf>, Error> {
+    /// Item directories under items/, skipping hidden entries and plain files
+    /// (STORAGE_SPEC.md §2). Returns `(path, dir_name)` pairs.
+    fn item_dirs(&self) -> Result<Vec<(PathBuf, String)>, Error> {
         let items_dir = self.items_dir();
         if !items_dir.exists() {
-            return Ok(None);
+            return Ok(vec![]);
         }
-        let suffix = format!("-{}", id);
+        let mut dirs = Vec::new();
         for entry in fs::read_dir(&items_dir)? {
             let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.ends_with(&suffix) && entry.file_type()?.is_dir() {
-                return Ok(Some(entry.path()));
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || !entry.file_type()?.is_dir() {
+                continue;
             }
+            dirs.push((entry.path(), name));
         }
-        Ok(None)
+        Ok(dirs)
+    }
+
+    fn find_dir_by_id(&self, id: &str) -> Result<Option<PathBuf>, Error> {
+        Ok(self
+            .item_dirs()?
+            .into_iter()
+            .find(|(_, name)| Self::extract_id_from_dirname(name) == Some(id))
+            .map(|(path, _)| path))
+    }
+
+    fn load_by_id(&self, id: &str) -> Result<Option<(PathBuf, Item)>, Error> {
+        let Some(dir) = self.find_dir_by_id(id)? else { return Ok(None) };
+        Ok(Self::read_item_from_dir(&dir)?.map(|item| (dir, item)))
     }
 
     fn read_item_from_dir(dir: &Path) -> Result<Option<Item>, Error> {
@@ -81,27 +95,22 @@ impl CatalogStore {
         Ok(())
     }
 
-    fn load_all(&self) -> Result<Vec<Item>, Error> {
-        let items_dir = self.items_dir();
-        if !items_dir.exists() {
-            return Ok(vec![]);
+    /// Write item.json and keep the cache in step.
+    fn save(&self, dir: &Path, item: &Item) -> Result<(), Error> {
+        Self::write_item_to_dir(dir, item)?;
+        if let Some(ref cache) = self.cache {
+            cache.upsert(item, Self::file_mtime(&dir.join("item.json")))?;
         }
+        Ok(())
+    }
+
+    /// Directories without item.json or with malformed JSON are silently skipped.
+    fn load_all(&self) -> Result<Vec<Item>, Error> {
         let mut items = Vec::new();
-        for entry in fs::read_dir(&items_dir)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            // Skip hidden entries (STORAGE_SPEC.md §2)
-            if name_str.starts_with('.') {
-                continue;
-            }
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            if let Some(item) = Self::read_item_from_dir(&entry.path())? {
+        for (dir, _) in self.item_dirs()? {
+            if let Some(item) = Self::read_item_from_dir(&dir)? {
                 items.push(item);
             }
-            // Directories without item.json or with malformed JSON are silently skipped
         }
         Ok(items)
     }
@@ -126,15 +135,8 @@ impl CatalogStore {
 
     /// Extract the 8-char hex item ID from a directory name of the form `{slug}-{id}`.
     fn extract_id_from_dirname(name: &str) -> Option<&str> {
-        if name.len() < 9 {
-            return None;
-        }
-        let (_, tail) = name.split_at(name.len() - 9);
-        if tail.starts_with('-') && tail[1..].bytes().all(|b| b.is_ascii_hexdigit()) {
-            Some(&tail[1..])
-        } else {
-            None
-        }
+        let (_, id) = name.rsplit_once('-')?;
+        (id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit())).then_some(id)
     }
 
     // -------------------------------------------------------------------------
@@ -150,25 +152,14 @@ impl CatalogStore {
             None => return Ok(()),
         };
 
-        let items_dir = self.items_dir();
-        if !items_dir.exists() {
-            return Ok(());
-        }
-
         // Collect id → (dir_path, mtime) for every item dir on disk
         let mut fs_dirs: std::collections::HashMap<String, (PathBuf, i64)> = Default::default();
-        for entry in fs::read_dir(&items_dir)? {
-            let entry = entry?;
-            let file_name = entry.file_name();
-            let name_str = file_name.to_string_lossy();
-            if name_str.starts_with('.') || !entry.file_type()?.is_dir() {
-                continue;
-            }
-            if let Some(id) = Self::extract_id_from_dirname(&name_str) {
-                let item_json = entry.path().join("item.json");
+        for (dir, name) in self.item_dirs()? {
+            if let Some(id) = Self::extract_id_from_dirname(&name) {
+                let item_json = dir.join("item.json");
                 if item_json.exists() {
                     let mtime = Self::file_mtime(&item_json);
-                    fs_dirs.insert(id.to_string(), (entry.path(), mtime));
+                    fs_dirs.insert(id.to_string(), (dir, mtime));
                 }
             }
         }
@@ -199,32 +190,10 @@ impl CatalogStore {
     /// Use on first install, after detected corruption, or as a user-facing repair action.
     /// No-op when no cache is configured.
     pub fn rebuild_cache(&self) -> Result<(), Error> {
-        let cache = match &self.cache {
-            Some(c) => c,
-            None => return Ok(()),
-        };
-
-        cache.delete_all()?;
-
-        let items_dir = self.items_dir();
-        if !items_dir.exists() {
-            return Ok(());
+        if let Some(ref cache) = self.cache {
+            cache.delete_all()?;
         }
-
-        for entry in fs::read_dir(&items_dir)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with('.') || !entry.file_type()?.is_dir() {
-                continue;
-            }
-            if let Some(item) = Self::read_item_from_dir(&entry.path())? {
-                let mtime = Self::file_mtime(&entry.path().join("item.json"));
-                cache.upsert(&item, mtime)?;
-            }
-        }
-
-        Ok(())
+        self.refresh()
     }
 
     // -------------------------------------------------------------------------
@@ -306,12 +275,7 @@ impl CatalogStore {
             attachments: new_item.attachments,
             extra: new_item.extra,
         };
-        let dir = self.item_dir_path(&item.name, &id);
-        Self::write_item_to_dir(&dir, &item)?;
-        if let Some(ref cache) = self.cache {
-            let mtime = Self::file_mtime(&dir.join("item.json"));
-            cache.upsert(&item, mtime)?;
-        }
+        self.save(&self.item_dir_path(&item.name, &id), &item)?;
         Ok(item)
     }
 
@@ -321,7 +285,7 @@ impl CatalogStore {
         }
         // Try exact ID match first
         if let Some(dir) = self.find_dir_by_id(id_or_name)? {
-            return Ok(Self::read_item_from_dir(&dir)?);
+            return Self::read_item_from_dir(&dir);
         }
         // Fall back to name search (exact, then substring); never guess between several.
         let items = self.load_all()?;
@@ -368,14 +332,7 @@ impl CatalogStore {
     }
 
     pub fn update_item(&self, id: &str, updates: ItemUpdate) -> Result<Option<Item>, Error> {
-        let old_dir = match self.find_dir_by_id(id)? {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-        let existing = match Self::read_item_from_dir(&old_dir)? {
-            Some(i) => i,
-            None => return Ok(None),
-        };
+        let Some((old_dir, existing)) = self.load_by_id(id)? else { return Ok(None) };
 
         Self::validate_common(
             updates.purchase_date.as_deref(),
@@ -429,11 +386,7 @@ impl CatalogStore {
         if old_dir != new_dir {
             fs::rename(&old_dir, &new_dir)?;
         }
-        Self::write_item_to_dir(&new_dir, &updated)?;
-        if let Some(ref cache) = self.cache {
-            let mtime = Self::file_mtime(&new_dir.join("item.json"));
-            cache.upsert(&updated, mtime)?;
-        }
+        self.save(&new_dir, &updated)?;
         Ok(Some(updated))
     }
 
@@ -485,15 +438,22 @@ impl CatalogStore {
         Ok(fields.into_iter().collect())
     }
 
-    pub fn search_items(&self, query: &str) -> Result<Vec<Item>, Error> {
-        if query.trim().is_empty() {
-            return Ok(vec![]);
+    /// Ranked full-text search (English stemming, accents ignored). Items match
+    /// if they contain any query word; best matches first.
+    pub fn search(&self, query: &str, limit: Option<usize>) -> Result<Vec<SearchHit>, Error> {
+        if let Some(ref cache) = self.cache {
+            return cache.search(query, limit);
         }
-        let items = match self.cache {
-            Some(ref cache) => cache.list_filtered(None)?,
-            None => self.load_all()?,
-        };
-        Ok(items.into_iter().filter(|i| i.matches_query(query)).collect())
+        let temp = CacheDb::open_in_memory()?;
+        for item in self.load_all()? {
+            temp.upsert(&item, 0)?;
+        }
+        temp.search(query, limit)
+    }
+
+    /// Ranked search returning just the items. See [`CatalogStore::search`].
+    pub fn search_items(&self, query: &str) -> Result<Vec<Item>, Error> {
+        Ok(self.search(query, None)?.into_iter().map(|h| h.item).collect())
     }
 
     // -------------------------------------------------------------------------
@@ -529,9 +489,8 @@ impl CatalogStore {
         label: Option<String>,
     ) -> Result<Item, Error> {
         Self::validate_filename(filename)?;
-        let dir = self.find_dir_by_id(item_id)?
-            .ok_or_else(|| Error::NotFound(item_id.to_string()))?;
-        let mut item = Self::read_item_from_dir(&dir)?
+        let (dir, mut item) = self
+            .load_by_id(item_id)?
             .ok_or_else(|| Error::NotFound(item_id.to_string()))?;
 
         fs::write(dir.join(filename), data)?;
@@ -547,11 +506,7 @@ impl CatalogStore {
         item.attachments = Some(attachments);
         item.updated_at = Self::now_iso8601();
 
-        Self::write_item_to_dir(&dir, &item)?;
-        if let Some(ref cache) = self.cache {
-            let mtime = Self::file_mtime(&dir.join("item.json"));
-            cache.upsert(&item, mtime)?;
-        }
+        self.save(&dir, &item)?;
         Ok(item)
     }
 
@@ -573,14 +528,7 @@ impl CatalogStore {
     /// Returns `None` if the item does not exist.
     pub fn delete_attachment(&self, item_id: &str, filename: &str) -> Result<Option<Item>, Error> {
         Self::validate_filename(filename)?;
-        let dir = match self.find_dir_by_id(item_id)? {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-        let mut item = match Self::read_item_from_dir(&dir)? {
-            Some(i) => i,
-            None => return Ok(None),
-        };
+        let Some((dir, mut item)) = self.load_by_id(item_id)? else { return Ok(None) };
 
         let file_path = dir.join(filename);
         let has_record = item.attachments.iter().flatten().any(|a| a.filename == filename);
@@ -602,11 +550,7 @@ impl CatalogStore {
         }
         item.updated_at = Self::now_iso8601();
 
-        Self::write_item_to_dir(&dir, &item)?;
-        if let Some(ref cache) = self.cache {
-            let mtime = Self::file_mtime(&dir.join("item.json"));
-            cache.upsert(&item, mtime)?;
-        }
+        self.save(&dir, &item)?;
         Ok(Some(item))
     }
 }
@@ -762,5 +706,27 @@ mod attachment_tests {
         let store2 = CatalogStore::new_with_cache(tmp.path(), &cache_dir).unwrap();
         store2.rebuild_cache().unwrap();
         assert_eq!(store2.list_items(None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn refresh_ignores_non_ascii_dir_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = CatalogStore::new_with_cache(tmp.path(), tmp.path().join("cache")).unwrap();
+        let item = store.add_item(NewItem { name: "Kettle".to_string(), ..Default::default() }).unwrap();
+        // 13 bytes: the old byte-offset slice landed mid-character and panicked.
+        fs::create_dir_all(tmp.path().join("items").join("日本日本x")).unwrap();
+
+        store.rebuild_cache().unwrap();
+        assert_eq!(store.list_items(None).unwrap().len(), 1);
+        assert_eq!(store.get_item(&item.id).unwrap().unwrap().id, item.id);
+    }
+
+    #[test]
+    fn extract_id_from_dirname_cases() {
+        assert_eq!(CatalogStore::extract_id_from_dirname("kettle-0badc0de"), Some("0badc0de"));
+        assert_eq!(CatalogStore::extract_id_from_dirname("a-b-0badc0de"), Some("0badc0de"));
+        assert_eq!(CatalogStore::extract_id_from_dirname("kettle"), None);
+        assert_eq!(CatalogStore::extract_id_from_dirname("kettle-0badc0d"), None);
+        assert_eq!(CatalogStore::extract_id_from_dirname("日本日本x"), None);
     }
 }
